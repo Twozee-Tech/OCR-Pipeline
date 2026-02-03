@@ -1,0 +1,6 @@
+{
+    "deepseek_model_path": "/workspace/models/DeepSeek-OCR-model",
+    "qwen_model_path": "/workspace/models/Qwen3-VL-8B-model",
+    "classifier": "heuristic",
+    "precision": "fp16"
+}
