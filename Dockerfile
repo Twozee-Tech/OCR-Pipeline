@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/pytorch:25.12-py3
 
-# System dependencies for DeepSeek-OCR
+# System dependencies for DeepSeek-OCR (needs transformers==4.46.3)
 RUN pip install --no-cache-dir \
     transformers==4.46.3 \
     tokenizers \
@@ -16,14 +16,12 @@ RUN pip install --no-cache-dir \
     huggingface_hub
 
 # Create venv for Qwen (needs newer transformers >=4.57)
+# Use --system-site-packages to inherit system torch/cuda
+# Only upgrade transformers, don't reinstall torch
 RUN python3 -m venv --system-site-packages /opt/venv_qwen && \
-    /opt/venv_qwen/bin/pip install --ignore-installed \
+    /opt/venv_qwen/bin/pip install --no-cache-dir \
     "transformers>=4.57.0" \
-    qwen-vl-utils \
-    huggingface-hub \
-    tokenizers \
-    accelerate \
-    pillow
+    qwen-vl-utils
 
 # Copy pipeline code
 COPY *.py /app/
