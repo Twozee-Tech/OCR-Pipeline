@@ -2,15 +2,19 @@
 """
 OCR Pipeline Orchestrator
 
-Two-stage PDF to Markdown conversion:
-  Stage 1: Qwen3-VL-8B classifies pages (runs in venv_qwen)
-  Stage 2: DeepSeek-OCR processes pages (runs in system Python)
+Three-stage PDF to Markdown conversion:
+  Stage 1:   Qwen3-VL-8B classifies pages (runs in venv_qwen)
+  Stage 1.5: Qwen3-VL-32B describes diagrams (runs in venv_qwen) [optional]
+  Stage 2:   DeepSeek-OCR processes pages (runs in system Python)
 
 Usage:
     python3 ocr_pipeline.py input.pdf [output.md] [--classifier qwen3-vl-8b|heuristic]
 
+    # With diagram description (recommended for documents with flowcharts/diagrams)
+    python3 ocr_pipeline.py input.pdf --classifier qwen3-vl-8b --describe-diagrams
+
 Setup required:
-    ./setup.sh  # Creates venv_qwen for Stage 1
+    ./setup.sh  # Creates venv_qwen for Stage 1 and Stage 1.5
 """
 
 import json
@@ -29,6 +33,9 @@ from stage2_ocr import (
     pdf_to_page_images,
     generate_markdown,
 )
+
+# Diagram types that trigger Stage 1.5
+DIAGRAM_TYPES = {'diagram', 'flowchart'}
 
 
 # Config file paths
@@ -173,6 +180,79 @@ def run_stage1_subprocess(
         return False
 
 
+def run_stage1_5_subprocess(
+    pdf_path: str,
+    classifications_json: str,
+    output_json: str,
+    model_path: str = None,
+    precision: str = "fp16",
+    dpi: int = 200,
+    verbose: bool = False
+) -> bool:
+    """
+    Run Stage 1.5 diagram describer as subprocess in venv.
+
+    Uses Qwen3-VL-32B to generate detailed descriptions with ASCII art
+    for diagram and flowchart pages.
+
+    Returns True on success, False on failure.
+    """
+    script_dir = Path(__file__).parent
+    stage1_5_script = script_dir / "stage1_5_diagram.py"
+
+    if not stage1_5_script.exists():
+        print(f"WARNING: stage1_5_diagram.py not found at {stage1_5_script}")
+        return False
+
+    # Find venv Python
+    venv_python = find_venv_python()
+
+    if venv_python is None:
+        print("WARNING: venv_qwen not found. Run ./setup.sh first.")
+        print("         Skipping Stage 1.5 diagram description.")
+        return False
+
+    # Build command
+    cmd = [
+        venv_python,
+        str(stage1_5_script),
+        pdf_path,
+        "-c", classifications_json,
+        "-o", output_json,
+        "--dpi", str(dpi),
+        "-p", precision,
+    ]
+
+    if model_path:
+        cmd.extend(["-m", model_path])
+
+    if verbose:
+        cmd.append("-v")
+
+    # Run subprocess
+    print(f"\n--- Running Stage 1.5 (Qwen3-VL-32B diagram description) ---")
+    print(f"Command: {' '.join(cmd)}")
+    print()
+
+    try:
+        # Run with real-time output (no capture)
+        result = subprocess.run(
+            cmd,
+            check=True,
+        )
+
+        return True
+
+    except subprocess.CalledProcessError as e:
+        print(f"WARNING: Stage 1.5 failed with exit code {e.returncode}")
+        print("         Continuing without diagram descriptions.")
+        return False
+
+    except FileNotFoundError as e:
+        print(f"WARNING: Could not run Stage 1.5: {e}")
+        return False
+
+
 def run_pipeline(
     pdf_path: str,
     output_path: str = None,
@@ -180,15 +260,18 @@ def run_pipeline(
     classifier_precision: str = 'fp16',
     deepseek_model_path: str = None,
     qwen_model_path: str = None,
+    qwen_describer_path: str = None,
+    describe_diagrams: bool = False,
     dpi: int = 200,
     verbose: bool = False,
     config: dict = None
 ) -> str:
     """
-    Run the full two-stage OCR pipeline.
+    Run the full three-stage OCR pipeline.
 
-    Stage 1 runs in venv_qwen (subprocess)
-    Stage 2 runs in current Python (system)
+    Stage 1:   Qwen3-VL-8B classifies pages (subprocess in venv)
+    Stage 1.5: Qwen3-VL-32B describes diagrams (subprocess in venv) [optional]
+    Stage 2:   DeepSeek-OCR processes pages (current Python)
     """
     config = config or {}
     pdf_path = Path(pdf_path)
@@ -207,12 +290,13 @@ def run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("OCR Pipeline - Two-Stage Processing")
+    print("OCR Pipeline - Three-Stage Processing")
     print("=" * 60)
-    print(f"Input:      {pdf_path}")
-    print(f"Output:     {output_path}")
-    print(f"Assets:     {output_dir}")
-    print(f"Classifier: {classifier} ({classifier_precision})")
+    print(f"Input:            {pdf_path}")
+    print(f"Output:           {output_path}")
+    print(f"Assets:           {output_dir}")
+    print(f"Classifier:       {classifier} ({classifier_precision})")
+    print(f"Describe diagrams: {describe_diagrams}")
     print()
 
     total_start = time.time()
@@ -255,6 +339,51 @@ def run_pipeline(
         content_types[ct] = content_types.get(ct, 0) + 1
     print(f"\nContent types: {content_types}")
     print(f"Classifications saved to: {classifications_file}")
+
+    # =========================================================================
+    # Stage 1.5: Diagram Description (optional)
+    # =========================================================================
+    diagram_descriptions = {}
+    descriptions_file = output_dir / "diagram_descriptions.json"
+
+    # Check if there are diagram pages and describe_diagrams is enabled
+    # Include diagram/flowchart pages AND mixed pages that have diagrams
+    diagram_pages = [c for c in classifications
+                     if c.get('type', '').lower() in DIAGRAM_TYPES
+                     or (c.get('type', '').lower() == 'mixed' and c.get('has_diagrams', False))]
+
+    if describe_diagrams and diagram_pages:
+        print("\n" + "=" * 60)
+        print(f"STAGE 1.5: Diagram Description ({len(diagram_pages)} pages)")
+        print("=" * 60)
+
+        describer_path = qwen_describer_path or config.get('qwen_describer_path')
+
+        success = run_stage1_5_subprocess(
+            pdf_path=str(pdf_path),
+            classifications_json=str(classifications_file),
+            output_json=str(descriptions_file),
+            model_path=describer_path,
+            precision=classifier_precision,
+            dpi=dpi,
+            verbose=verbose
+        )
+
+        if success and descriptions_file.exists():
+            with open(descriptions_file, 'r') as f:
+                desc_data = json.load(f)
+            # Convert string keys to int for page numbers
+            raw_descriptions = desc_data.get('descriptions', {})
+            diagram_descriptions = {int(k): v for k, v in raw_descriptions.items()}
+            print(f"Loaded {len(diagram_descriptions)} diagram descriptions")
+        else:
+            print("No diagram descriptions generated (Stage 1.5 skipped or failed)")
+
+    elif describe_diagrams and not diagram_pages:
+        print("\nNo diagram/flowchart pages found - skipping Stage 1.5")
+
+    elif diagram_pages:
+        print(f"\nNote: Found {len(diagram_pages)} diagram pages. Use --describe-diagrams for better output.")
 
     # =========================================================================
     # Stage 2: OCR Processing (system Python)
@@ -305,7 +434,10 @@ def run_pipeline(
     print("Generating Output")
     print("=" * 60)
 
-    markdown = generate_markdown(results, pdf_path.stem, classifier_method)
+    markdown = generate_markdown(
+        results, pdf_path.stem, classifier_method,
+        diagram_descriptions=diagram_descriptions
+    )
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(markdown)
@@ -333,21 +465,24 @@ def run_pipeline(
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="OCR Pipeline - Two-Stage PDF to Markdown",
+        description="OCR Pipeline - Three-Stage PDF to Markdown",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Setup:
-  ./setup.sh  # Creates venv_qwen for Qwen3-VL
+  ./setup.sh  # Creates venv_qwen for Qwen3-VL models
 
 Examples:
   # With Qwen3-VL-8B classifier (requires venv)
   python3 ocr_pipeline.py document.pdf --classifier qwen3-vl-8b
 
+  # With diagram description (recommended for diagrams/flowcharts)
+  python3 ocr_pipeline.py document.pdf --classifier qwen3-vl-8b --describe-diagrams
+
   # Heuristic classification (no venv needed)
   python3 ocr_pipeline.py document.pdf --classifier heuristic
 
   # Full options
-  python3 ocr_pipeline.py document.pdf output.md --classifier qwen3-vl-8b -v
+  python3 ocr_pipeline.py document.pdf output.md --classifier qwen3-vl-8b --describe-diagrams -v
 """
     )
 
@@ -368,8 +503,25 @@ Examples:
         help='Classifier precision (default: fp16)'
     )
 
+    # Diagram description options
+    diagram_group = parser.add_mutually_exclusive_group()
+    diagram_group.add_argument(
+        '--describe-diagrams',
+        action='store_true',
+        dest='describe_diagrams',
+        help='Use Qwen3-VL-32B to describe diagram/flowchart pages with ASCII art'
+    )
+    diagram_group.add_argument(
+        '--no-describe-diagrams',
+        action='store_false',
+        dest='describe_diagrams',
+        help='Skip diagram description (faster, uses DeepSeek only)'
+    )
+    parser.set_defaults(describe_diagrams=None)
+
     parser.add_argument('--deepseek-model', default=None, help='Path to DeepSeek-OCR model')
-    parser.add_argument('--qwen-model', default=None, help='Path to Qwen3-VL model')
+    parser.add_argument('--qwen-model', default=None, help='Path to Qwen3-VL-8B classifier model')
+    parser.add_argument('--qwen-describer', default=None, help='Path to Qwen3-VL-32B describer model')
     parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI')
     parser.add_argument('--config', default=None, help='Path to config JSON')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
@@ -383,9 +535,16 @@ def main():
     # Load config
     config = load_config(args.config)
 
-    # Get settings
+    # Get settings from args or config
     classifier = args.classifier or config.get('classifier', 'heuristic')
     precision = args.precision or config.get('precision', 'fp16')
+
+    # Determine describe_diagrams setting
+    # Priority: CLI arg > config > default (False)
+    if args.describe_diagrams is not None:
+        describe_diagrams = args.describe_diagrams
+    else:
+        describe_diagrams = config.get('describe_diagrams', False)
 
     # Run pipeline
     run_pipeline(
@@ -395,6 +554,8 @@ def main():
         classifier_precision=precision,
         deepseek_model_path=args.deepseek_model,
         qwen_model_path=args.qwen_model,
+        qwen_describer_path=args.qwen_describer,
+        describe_diagrams=describe_diagrams,
         dpi=args.dpi,
         verbose=args.verbose,
         config=config

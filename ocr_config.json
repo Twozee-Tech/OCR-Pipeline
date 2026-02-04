@@ -1,6 +1,8 @@
 {
-    "deepseek_model_path": "/workspace/models/DeepSeek-OCR-model",
+    "deepseek_model_path": "/workspace/models/DeepSeek-OCR-2-model",
     "qwen_model_path": "/workspace/models/Qwen3-VL-8B-model",
-    "classifier": "heuristic",
-    "precision": "fp16"
+    "qwen_describer_path": "/workspace/models/Qwen3-VL-32B-Thinking",
+    "classifier": "qwen3-vl-8b",
+    "precision": "fp16",
+    "describe_diagrams": false
 }

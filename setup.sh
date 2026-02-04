@@ -1,6 +1,6 @@
 #!/bin/bash
 # Setup script for OCR Pipeline
-# Creates venv for Qwen3-VL (Stage 1) with newer transformers
+# Creates venv for Qwen3-VL models (Stage 1 classifier, Stage 1.5 diagram describer)
 
 set -e
 
@@ -17,10 +17,10 @@ if [ ! -d "/workspace" ]; then
 fi
 
 # ============================================
-# Stage 1: Qwen venv (newer transformers)
+# Stage 1 & 1.5: Qwen venv (newer transformers)
 # ============================================
 echo ""
-echo "=== Creating venv for Qwen3-VL (Stage 1) ==="
+echo "=== Creating venv for Qwen3-VL models (Stage 1 + 1.5) ==="
 
 # Remove old venv if exists
 rm -rf venv_qwen
@@ -69,14 +69,22 @@ if [ -d "$MODELS_DIR/DeepSeek-OCR-model" ]; then
     echo "DeepSeek-OCR: OK ($MODELS_DIR/DeepSeek-OCR-model)"
 else
     echo "DeepSeek-OCR: NOT FOUND"
-    echo "  Download: git clone https://huggingface.co/deepseek-ai/DeepSeek-OCR $MODELS_DIR/DeepSeek-OCR-model"
+    echo "  Download: hf download deepseek-ai/DeepSeek-OCR --local-dir $MODELS_DIR/DeepSeek-OCR-model"
 fi
 
 if [ -d "$MODELS_DIR/Qwen3-VL-8B-model" ]; then
-    echo "Qwen3-VL-8B: OK ($MODELS_DIR/Qwen3-VL-8B-model)"
+    echo "Qwen3-VL-8B (classifier): OK ($MODELS_DIR/Qwen3-VL-8B-model)"
 else
-    echo "Qwen3-VL-8B: NOT FOUND"
-    echo "  Download: git clone https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct $MODELS_DIR/Qwen3-VL-8B-model"
+    echo "Qwen3-VL-8B (classifier): NOT FOUND"
+    echo "  Download: hf download Qwen/Qwen3-VL-8B-Instruct --local-dir $MODELS_DIR/Qwen3-VL-8B-model"
+fi
+
+if [ -d "$MODELS_DIR/Qwen3-VL-32B-model" ]; then
+    echo "Qwen3-VL-32B (diagrams): OK ($MODELS_DIR/Qwen3-VL-32B-model)"
+else
+    echo "Qwen3-VL-32B (diagrams): NOT FOUND (optional, ~65GB)"
+    echo "  Download: hf download Qwen/Qwen3-VL-32B-Instruct --local-dir $MODELS_DIR/Qwen3-VL-32B-model"
+    echo "  Note: Only needed if using --describe-diagrams flag"
 fi
 
 echo ""
@@ -88,13 +96,21 @@ echo "Usage:"
 echo "  # Full pipeline (uses venv automatically)"
 echo "  python3 ocr_pipeline.py input.pdf --classifier qwen3-vl-8b"
 echo ""
+echo "  # With diagram description (best for flowcharts/diagrams)"
+echo "  python3 ocr_pipeline.py input.pdf --classifier qwen3-vl-8b --describe-diagrams"
+echo ""
 echo "  # Heuristic only (no Qwen model needed)"
 echo "  python3 ocr_pipeline.py input.pdf --classifier heuristic"
 echo ""
-echo "  # Stage 1 standalone (in venv)"
+echo "  # Stage 1 standalone (classification, in venv)"
 echo "  source venv_qwen/bin/activate"
 echo "  python3 stage1_classifier.py input.pdf -o classifications.json"
 echo "  deactivate"
 echo ""
-echo "  # Stage 2 standalone (system Python)"
+echo "  # Stage 1.5 standalone (diagram description, in venv)"
+echo "  source venv_qwen/bin/activate"
+echo "  python3 stage1_5_diagram.py input.pdf -c classifications.json -o diagrams.json"
+echo "  deactivate"
+echo ""
+echo "  # Stage 2 standalone (OCR, system Python)"
 echo "  python3 stage2_ocr.py input.pdf -c classifications.json -o output.md"

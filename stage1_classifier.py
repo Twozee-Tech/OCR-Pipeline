@@ -43,10 +43,12 @@ Respond ONLY with valid JSON in this exact format:
 Type definitions:
 - text: Primarily text content (paragraphs, lists, headers)
 - table: Contains data tables
-- diagram: Technical diagrams, architecture diagrams, charts
-- flowchart: Process flows, decision trees, sequence diagrams
-- figure: Photos, screenshots, illustrations with captions
+- diagram: Technical diagrams, architecture diagrams, UML diagrams, sequence diagrams, call flow diagrams, state machines, component diagrams
+- flowchart: Process flows, decision trees, workflow diagrams, activity diagrams
+- figure: Photos, screenshots, illustrations, graphs, charts with NO connecting arrows or flow
 - mixed: Combination of text with significant visual elements
+
+IMPORTANT: If the page contains boxes/nodes connected by arrows showing a flow or sequence, classify as "diagram" or "flowchart", NOT "figure".
 
 Respond with ONLY the JSON, no explanation."""
 

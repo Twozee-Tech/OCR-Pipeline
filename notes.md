@@ -130,3 +130,86 @@ OCR_Final/
 3. Separate unload functions for explicit VRAM management
 4. Classifications saved to `{output}_assets/classifications.json`
 5. More structured CLI with argparse
+
+---
+
+## Stage 1.5 Addition (Diagram Description)
+
+### Problem Identified
+- DeepSeek-OCR performs poorly on diagram/flowchart pages
+- It doesn't understand visual relationships in Call Flow diagrams
+- Qwen3-VL-32B can understand and describe diagrams with ASCII art
+
+### Solution: 3-Stage Pipeline
+
+Added Stage 1.5 between classification and OCR:
+```
+PDF → [Stage 1: Classifier] → classifications.json
+              ↓
+       (diagram/flowchart pages only)
+              ↓
+      [Stage 1.5: Diagram Describer] → diagram_descriptions.json
+              ↓
+PDF + classifications + descriptions → [Stage 2: OCR] → output.md
+```
+
+### Implementation
+
+#### New File: `stage1_5_diagram.py`
+- Uses Qwen3-VL-32B (larger model) for diagram description
+- Generates ASCII art representations of diagrams
+- Provides step-by-step flow descriptions
+- Only processes pages classified as 'diagram' or 'flowchart'
+
+#### Modified: `ocr_pipeline.py`
+- Added `--describe-diagrams` / `--no-describe-diagrams` flags
+- Added `run_stage1_5_subprocess()` function
+- Stage 1.5 runs after Stage 1, before Stage 2
+- Diagram descriptions passed to `generate_markdown()`
+
+#### Modified: `stage2_ocr.py`
+- `generate_markdown()` accepts `diagram_descriptions` parameter
+- For diagram pages with descriptions: uses Qwen output instead of DeepSeek
+- Optionally appends any additional OCR text found
+
+#### Modified: `ocr_config.json`
+- Added `qwen_describer_path` for Qwen3-VL-32B model
+- Added `describe_diagrams` boolean option
+
+#### Modified: `setup.sh`
+- Added info about Qwen3-VL-32B model (optional)
+- Updated usage examples
+
+### VRAM Flow
+```
+1. Load Qwen3-VL-8B (~16GB) → classify all pages → unload
+2. Load Qwen3-VL-32B (~60GB) → describe diagram pages only → unload
+3. Load DeepSeek-OCR (~8GB) → process all pages → unload
+4. Merge results → save markdown
+```
+
+### CLI Examples
+```bash
+# Full 3-stage pipeline with diagram description
+python ocr_pipeline.py input.pdf --classifier qwen3-vl-8b --describe-diagrams
+
+# Skip diagram description (faster, 2-stage only)
+python ocr_pipeline.py input.pdf --classifier qwen3-vl-8b --no-describe-diagrams
+
+# Stage 1.5 standalone
+source venv_qwen/bin/activate
+python stage1_5_diagram.py input.pdf -c classifications.json -o diagrams.json -v
+```
+
+### API Addition
+
+**stage1_5_diagram.py:**
+- `load_model(model_path, precision, verbose)` - Load Qwen3-VL-32B
+- `unload_model(model, processor, verbose)` - Free VRAM
+- `describe_diagram(model, processor, image, page_num, verbose)` - Single page
+- `describe_diagrams(model, processor, pages, classifications, verbose)` - Batch
+- `save_descriptions(descriptions, output_path)` - Save to JSON
+- `pdf_to_page_images(pdf_path, dpi, verbose)` - PDF to images
+
+**Updated generate_markdown():**
+- `generate_markdown(results, pdf_name, classifier_method, diagram_descriptions=None)`

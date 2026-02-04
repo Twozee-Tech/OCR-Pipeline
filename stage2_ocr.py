@@ -453,7 +453,8 @@ def pdf_to_page_images(pdf_path: str, dpi: int = 200, verbose: bool = False) -> 
 # Output Generation
 # ============================================================================
 
-def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'unknown') -> str:
+def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'unknown',
+                      diagram_descriptions: dict = None) -> str:
     """
     Generate final markdown from OCR results.
 
@@ -461,11 +462,15 @@ def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'un
         results: List of OCR results from ocr_pages()
         pdf_name: Name of source PDF
         classifier_method: Method used for classification
+        diagram_descriptions: Dict of {page_num: description} from Stage 1.5
 
     Returns:
         str: Complete markdown document
     """
     combined = []
+    diagram_descriptions = diagram_descriptions or {}
+    diagram_types = {'diagram', 'flowchart'}
+    diagrams_used = 0
 
     for r in results:
         classification = r.get('classification', {})
@@ -473,13 +478,28 @@ def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'un
         content_type = classification.get('type', 'unknown')
         confidence = classification.get('confidence', 0)
         method = classification.get('method', 'unknown')
-        text = r.get('text', '')
+        ocr_text = r.get('text', '')
 
-        if text:
-            # Metadata comment
-            meta = f"<!-- Page {page_num} | Type: {content_type} | Confidence: {confidence:.0%} | Method: {method} -->"
+        # Check if we have a Qwen3-VL-32B description for this page
+        diagram_desc = diagram_descriptions.get(page_num)
+        has_diagrams = classification.get('has_diagrams', False)
+        is_diagram_page = content_type.lower() in diagram_types or (content_type.lower() == 'mixed' and has_diagrams)
 
-            # Add VL description for visual content
+        if diagram_desc and is_diagram_page:
+            # Use Qwen3-VL-32B description for diagram pages
+            text = diagram_desc
+            method = 'qwen3-vl-32b'
+            diagrams_used += 1
+
+            # Optionally append DeepSeek text if it found additional content
+            if ocr_text and len(ocr_text.strip()) > 50:
+                text += f"\n\n---\n*Additional OCR text:*\n\n{ocr_text}"
+
+        else:
+            # Use DeepSeek OCR for non-diagram pages or when no description available
+            text = ocr_text
+
+            # Add VL description for visual content (from classifier)
             vl_desc = classification.get('description', '')
             if content_type in ('diagram', 'figure', 'flowchart') and vl_desc:
                 text += f"\n\n> **Page Analysis:** {vl_desc}\n"
@@ -488,10 +508,15 @@ def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'un
             if 'ocr_description' in r:
                 text += f"\n\n> **OCR Description:** {r['ocr_description']}\n"
 
+        if text:
+            # Metadata comment
+            meta = f"<!-- Page {page_num} | Type: {content_type} | Confidence: {confidence:.0%} | Method: {method} -->"
             combined.append(f"{meta}\n\n{text}")
 
     # Determine converter info
-    if classifier_method == 'qwen3-vl-8b':
+    if diagrams_used > 0:
+        converter_info = f"Qwen3-VL-8B + Qwen3-VL-32B ({diagrams_used} diagrams) + DeepSeek-OCR"
+    elif classifier_method == 'qwen3-vl-8b':
         converter_info = "Qwen3-VL-8B + DeepSeek-OCR"
     else:
         converter_info = "DeepSeek-OCR (heuristic classification)"
@@ -535,6 +560,7 @@ Examples:
     parser.add_argument('input_pdf', help='Input PDF file')
     parser.add_argument('-o', '--output', required=True, help='Output markdown file')
     parser.add_argument('-c', '--classifications', help='Classifications JSON from Stage 1')
+    parser.add_argument('-d', '--diagrams', help='Diagram descriptions JSON from Stage 1.5')
     parser.add_argument('-m', '--model', help='Path to DeepSeek-OCR model')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI (default: 200)')
@@ -542,16 +568,37 @@ Examples:
     return parser.parse_args()
 
 
-def find_model_path(custom_path: str = None) -> str:
+def load_config() -> dict:
+    """Load config from ocr_config.json."""
+    config_paths = [
+        Path("ocr_config.json"),
+        Path(__file__).parent / "ocr_config.json",
+        Path("/workspace/data/ocr_config.json"),
+    ]
+    for path in config_paths:
+        if path.exists():
+            with open(path) as f:
+                return json.load(f)
+    return {}
+
+
+def find_model_path(custom_path: str = None, config: dict = None) -> str:
     """Find DeepSeek-OCR model path."""
     if custom_path and os.path.exists(custom_path):
         return custom_path
 
+    # Check config
+    if config and config.get('deepseek_model_path'):
+        if os.path.exists(config['deepseek_model_path']):
+            return config['deepseek_model_path']
+
     # Common paths
     candidates = [
+        './DeepSeek-OCR-2-model',
         './DeepSeek-OCR-model',
         '../DeepSeek-OCR-model',
         '/workspace/DeepSeek-OCR-model',
+        '/workspace/models/DeepSeek-OCR-2-model',
         '/workspace/models/DeepSeek-OCR-model',
         os.path.expanduser('~/DeepSeek-OCR-model'),
     ]
@@ -571,11 +618,14 @@ def main():
         print(f"ERROR: PDF not found: {pdf_path}")
         sys.exit(1)
 
+    # Load config
+    config = load_config()
+
     # Find model
-    model_path = find_model_path(args.model)
+    model_path = find_model_path(args.model, config)
     if model_path is None:
         print("ERROR: DeepSeek-OCR model not found.")
-        print("Download with: git clone https://huggingface.co/deepseek-ai/DeepSeek-OCR DeepSeek-OCR-model")
+        print("Download with: hf download deepseek-ai/DeepSeek-OCR-2 --local-dir /workspace/models/DeepSeek-OCR-2-model")
         sys.exit(1)
 
     print("=" * 60)
@@ -630,8 +680,17 @@ def main():
     # Unload model
     unload_model(model, tokenizer, verbose=args.verbose)
 
+    # Load diagram descriptions if provided
+    diagram_descriptions = {}
+    if args.diagrams and os.path.exists(args.diagrams):
+        with open(args.diagrams, 'r') as f:
+            desc_data = json.load(f)
+        raw_descriptions = desc_data.get('descriptions', {})
+        diagram_descriptions = {int(k): v for k, v in raw_descriptions.items()}
+        print(f"Loaded {len(diagram_descriptions)} diagram descriptions from {args.diagrams}")
+
     # Generate output
-    markdown = generate_markdown(results, pdf_path.stem, classifier_method)
+    markdown = generate_markdown(results, pdf_path.stem, classifier_method, diagram_descriptions)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(markdown)
