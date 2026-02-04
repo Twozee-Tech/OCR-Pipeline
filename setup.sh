@@ -140,6 +140,9 @@ if [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] || [[ "$DL_QWEN8B" =~ ^[Yy] ]] || [[ "$DL_QWEN3
 
     DL_CMDS+="echo '>>> Downloads complete!'"
 
+    # Check if we already have the downloader image
+    HAD_PYTHON_IMAGE=$(docker images -q python:3.11-slim 2>/dev/null)
+
     # Run downloads in container
     docker run --rm \
         -v "$MODELS_DIR:/models" \
@@ -148,6 +151,18 @@ if [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] || [[ "$DL_QWEN8B" =~ ^[Yy] ]] || [[ "$DL_QWEN3
         bash -c "pip install -q huggingface_hub && $DL_CMDS"
 
     echo -e "  ${GREEN}✓${NC} Model downloads complete"
+
+    # Cleanup: remove HuggingFace cache
+    if [ -d "$MODELS_DIR/.cache" ]; then
+        rm -rf "$MODELS_DIR/.cache"
+        echo -e "  ${GREEN}✓${NC} Cleaned up download cache"
+    fi
+
+    # Cleanup: remove python image if we pulled it
+    if [ -z "$HAD_PYTHON_IMAGE" ]; then
+        docker rmi python:3.11-slim >/dev/null 2>&1 || true
+        echo -e "  ${GREEN}✓${NC} Removed temporary Docker image"
+    fi
 fi
 
 # ============================================
