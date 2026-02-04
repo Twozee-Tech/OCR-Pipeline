@@ -87,17 +87,18 @@ def load_model(model_path: str = None, precision: str = "fp16", verbose: bool = 
             local_files_only=local_only
         )
 
-        # Configure dtype
+        # Configure dtype - bfloat16 is faster on modern GPUs
         if precision == "fp8":
-            dtype = torch.float8_e4m3fn if hasattr(torch, 'float8_e4m3fn') else torch.float16
+            dtype = torch.float8_e4m3fn if hasattr(torch, 'float8_e4m3fn') else torch.bfloat16
         else:
-            dtype = torch.float16
+            dtype = torch.bfloat16
 
-        # Force GPU loading
+        # Force GPU loading with Flash Attention 2 for speed
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
             torch_dtype=dtype,
             device_map="cuda:0",
+            attn_implementation="flash_attention_2",
             trust_remote_code=True,
             local_files_only=local_only,
         )
@@ -170,12 +171,13 @@ def classify_page(model, processor, image: Image.Image, verbose: bool = False) -
             return_tensors="pt",
         ).to(model.device)
 
-        # Generate response
-        with torch.no_grad():
+        # Generate response (greedy for speed and consistency)
+        with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=256,
                 do_sample=False,
+                use_cache=True,
             )
 
         # Decode (skip input tokens)
