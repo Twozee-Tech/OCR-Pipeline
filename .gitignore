@@ -1,7 +1,27 @@
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-.env
 venv/
-.venv/
+venv_qwen/
+.env
+
+# Output
+output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Models (large files)
+models/
+*.safetensors
+*.bin
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log

@@ -70,13 +70,33 @@ DeepSeek-OCR extracts content using classification-optimized prompts.
 
 Models load sequentially, not simultaneously.
 
+## Project Structure
+
+```
+├── install.sh          # One-line installer
+├── README.md
+├── docker/
+│   ├── Dockerfile
+│   └── docker-compose.yml
+├── src/
+│   ├── entrypoint.py
+│   ├── ocr_pipeline.py
+│   ├── stage1_classifier.py
+│   ├── stage1_5_diagram.py
+│   └── stage2_ocr.py
+├── config/
+│   └── ocr_config.json
+└── docs/
+    └── notes.md
+```
+
 ## Advanced Options
 
 ```bash
 # Keep intermediate files for debugging
 ocr document.pdf --keep-assets
 
-# Check installed models
+# Check installed version
 cat ~/.local/bin/ocr | head -5
 ```
 
@@ -95,14 +115,17 @@ docker rmi ocr-pipeline
 rm -rf ~/.cache/ocr-models
 ```
 
-## Manual Installation
+## Development
 
-For development or customization:
+For local development:
 
 ```bash
 git clone https://github.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX-SPARK.git
-cd OCR-Pipeline
-./setup.sh
+cd Advanced-OCR-Nvidia-DGX-SPARK
+
+# Build with docker-compose
+cd docker
+docker-compose build
 ```
 
 ## License

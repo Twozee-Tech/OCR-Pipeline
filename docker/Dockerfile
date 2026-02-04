@@ -23,9 +23,9 @@ RUN python3 -m venv --system-site-packages /opt/venv_qwen && \
     "transformers>=4.57.0" \
     qwen-vl-utils
 
-# Copy pipeline code
-COPY *.py /app/
-COPY ocr_config.json /app/
+# Copy pipeline code (paths relative to build context)
+COPY src/*.py /app/
+COPY config/ocr_config.json /app/
 WORKDIR /app
 
 # Create directories

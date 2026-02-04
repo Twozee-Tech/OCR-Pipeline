@@ -1,9 +1,9 @@
 #!/bin/bash
-# Advanced OCR for NVIDIA DGX Spark - Installer v1.5
+# Advanced OCR for NVIDIA DGX Spark - Installer v2.0
 # Usage: curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX-SPARK/main/install.sh | bash
 #
 # Installs a single 'ocr' command - no repo files left behind
-VERSION="1.5"
+VERSION="2.0"
 
 set -e
 
@@ -187,19 +187,20 @@ echo ""
 echo -e "${YELLOW}[4/5] Building Docker image...${NC}"
 
 # Download files needed for Docker build
-curl -fsSL "$REPO_RAW/Dockerfile" -o "$TEMP_DIR/Dockerfile"
-curl -fsSL "$REPO_RAW/entrypoint.py" -o "$TEMP_DIR/entrypoint.py"
-curl -fsSL "$REPO_RAW/ocr_pipeline.py" -o "$TEMP_DIR/ocr_pipeline.py"
-curl -fsSL "$REPO_RAW/stage1_classifier.py" -o "$TEMP_DIR/stage1_classifier.py"
-curl -fsSL "$REPO_RAW/stage1_5_diagram.py" -o "$TEMP_DIR/stage1_5_diagram.py"
-curl -fsSL "$REPO_RAW/stage2_ocr.py" -o "$TEMP_DIR/stage2_ocr.py"
+mkdir -p "$TEMP_DIR/src" "$TEMP_DIR/config"
+curl -fsSL "$REPO_RAW/docker/Dockerfile" -o "$TEMP_DIR/Dockerfile"
+curl -fsSL "$REPO_RAW/src/entrypoint.py" -o "$TEMP_DIR/src/entrypoint.py"
+curl -fsSL "$REPO_RAW/src/ocr_pipeline.py" -o "$TEMP_DIR/src/ocr_pipeline.py"
+curl -fsSL "$REPO_RAW/src/stage1_classifier.py" -o "$TEMP_DIR/src/stage1_classifier.py"
+curl -fsSL "$REPO_RAW/src/stage1_5_diagram.py" -o "$TEMP_DIR/src/stage1_5_diagram.py"
+curl -fsSL "$REPO_RAW/src/stage2_ocr.py" -o "$TEMP_DIR/src/stage2_ocr.py"
 
 # Generate config with actual model paths (relative to /workspace/models inside container)
 DEEPSEEK_NAME=$(basename "$DEEPSEEK_PATH")
 QWEN8B_NAME=$(basename "$QWEN8B_PATH")
 QWEN32B_NAME=$(basename "$QWEN32B_PATH")
 
-cat > "$TEMP_DIR/ocr_config.json" << CONFIGEOF
+cat > "$TEMP_DIR/config/ocr_config.json" << CONFIGEOF
 {
     "deepseek_model_path": "/workspace/models/$DEEPSEEK_NAME",
     "qwen_model_path": "/workspace/models/$QWEN8B_NAME",
