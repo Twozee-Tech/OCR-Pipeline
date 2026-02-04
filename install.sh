@@ -3,7 +3,7 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/OCR-Pipeline/main/install.sh | bash
 #
 # Installs a single 'ocr' command - no repo files left behind
-VERSION="1.2"
+VERSION="1.3"
 
 set -e
 
@@ -232,11 +232,15 @@ cat > "$BIN_DIR/ocr" << WRAPPER
 MODELS_DIR="$MODELS_DIR"
 
 if [ -z "\$1" ]; then
-    echo "Usage: ocr <input.pdf> [options]"
+    echo "Usage: ocr <input.pdf> [output.md] [options]"
     echo ""
     echo "Options:"
     echo "  --diagrams    Enable detailed diagram description (needs Qwen-32B)"
-    echo "  --output DIR  Output directory (default: ./output)"
+    echo ""
+    echo "Examples:"
+    echo "  ocr document.pdf                    # Output to ./output/document.md"
+    echo "  ocr document.pdf result.md          # Output to ./result.md"
+    echo "  ocr document.pdf --diagrams         # With diagram description"
     echo ""
     echo "Models: \$MODELS_DIR"
     exit 1
@@ -244,39 +248,53 @@ fi
 
 INPUT_FILE="\$(realpath "\$1")"
 INPUT_DIR="\$(dirname "\$INPUT_FILE")"
-INPUT_NAME="\$(basename "\$INPUT_FILE")"
-
-# Parse options
-DESCRIBE_DIAGRAMS="false"
-OUTPUT_DIR="./output"
-
+INPUT_BASENAME="\$(basename "\$INPUT_FILE")"
+INPUT_NAME="\${INPUT_BASENAME%.pdf}"
 shift
+
+# Parse arguments
+DESCRIBE_DIAGRAMS="false"
+OUTPUT_FILE=""
+
 while [[ \$# -gt 0 ]]; do
     case \$1 in
         --diagrams) DESCRIBE_DIAGRAMS="true"; shift ;;
-        --output) OUTPUT_DIR="\$2"; shift 2 ;;
+        *.md) OUTPUT_FILE="\$1"; shift ;;
         *) shift ;;
     esac
 done
 
-mkdir -p "\$OUTPUT_DIR"
-OUTPUT_DIR="\$(realpath "\$OUTPUT_DIR")"
+# Determine output path
+if [ -n "\$OUTPUT_FILE" ]; then
+    # User specified output file
+    OUTPUT_DIR="\$(dirname "\$OUTPUT_FILE")"
+    OUTPUT_NAME="\$(basename "\$OUTPUT_FILE")"
+    [ "\$OUTPUT_DIR" = "." ] && OUTPUT_DIR="\$(pwd)"
+    mkdir -p "\$OUTPUT_DIR"
+    OUTPUT_DIR="\$(realpath "\$OUTPUT_DIR")"
+else
+    # Default: ./output/<input>.md
+    OUTPUT_DIR="\$(pwd)/output"
+    OUTPUT_NAME="\${INPUT_NAME}.md"
+    mkdir -p "\$OUTPUT_DIR"
+fi
 
 echo "OCR Pipeline"
 echo "  Input:  \$INPUT_FILE"
-echo "  Output: \$OUTPUT_DIR/"
+echo "  Output: \$OUTPUT_DIR/\$OUTPUT_NAME"
 echo ""
 
 docker run --rm --gpus all \\
     -v "\$MODELS_DIR:/workspace/models:ro" \\
     -v "\$INPUT_DIR:/data/input:ro" \\
     -v "\$OUTPUT_DIR:/data/output" \\
-    -e OCR_INPUT_PDF="/data/input/\$INPUT_NAME" \\
+    -e OCR_INPUT_PDF="/data/input/\$INPUT_BASENAME" \\
+    -e OCR_OUTPUT_PATH="/data/output/\$OUTPUT_NAME" \\
     -e OCR_DESCRIBE_DIAGRAMS="\$DESCRIBE_DIAGRAMS" \\
     ocr-pipeline
 
 echo ""
-echo "Done! Output: \$OUTPUT_DIR/"
+echo "Done! Output: \$OUTPUT_DIR/\$OUTPUT_NAME"
 WRAPPER
 
 chmod +x "$BIN_DIR/ocr"
