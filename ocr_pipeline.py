@@ -269,6 +269,7 @@ def run_pipeline(
     describe_diagrams: bool = False,
     dpi: int = 200,
     verbose: bool = False,
+    keep_assets: bool = False,
     config: dict = None
 ) -> str:
     """
@@ -458,6 +459,15 @@ def run_pipeline(
     print(f"Total characters: {total_chars}")
     print(f"Figures extracted: {total_figures}")
     print(f"Output: {output_path}")
+
+    # Cleanup assets unless --keep-assets
+    if not keep_assets and output_dir.exists():
+        import shutil
+        shutil.rmtree(output_dir)
+        print(f"Cleaned up: {output_dir}")
+    elif keep_assets:
+        print(f"Assets kept: {output_dir}")
+
     print("=" * 60)
 
     return str(output_path)
@@ -530,6 +540,7 @@ Examples:
     parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI')
     parser.add_argument('--config', default=None, help='Path to config JSON')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    parser.add_argument('--keep-assets', action='store_true', help='Keep intermediate files (classifications, etc.)')
 
     return parser.parse_args()
 
@@ -563,6 +574,7 @@ def main():
         describe_diagrams=describe_diagrams,
         dpi=args.dpi,
         verbose=args.verbose,
+        keep_assets=args.keep_assets,
         config=config
     )
 
