@@ -3,7 +3,7 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/OCR-Pipeline/main/install.sh | bash
 #
 # Installs a single 'ocr' command - no repo files left behind
-VERSION="1.4"
+VERSION="1.5"
 
 set -e
 
