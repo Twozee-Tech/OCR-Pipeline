@@ -178,6 +178,9 @@ def classify_page(model, processor, image: Image.Image, verbose: bool = False) -
                 max_new_tokens=256,
                 do_sample=False,
                 use_cache=True,
+                temperature=None,
+                top_p=None,
+                top_k=None,
             )
 
         # Decode (skip input tokens)

@@ -202,6 +202,9 @@ def describe_diagram(model, processor, image: Image.Image,
                 max_new_tokens=2048,
                 do_sample=False,
                 use_cache=True,
+                temperature=None,
+                top_p=None,
+                top_k=None,
             )
 
         # Decode (skip input tokens)
