@@ -139,8 +139,6 @@ def unload_model(model, processor, verbose: bool = False):
 
 def classify_page(model, processor, image: Image.Image, verbose: bool = False) -> dict:
     """Classify a single page using Qwen3-VL."""
-    from qwen_vl_utils import process_vision_info
-
     if model is None or processor is None:
         return None
 
@@ -156,38 +154,35 @@ def classify_page(model, processor, image: Image.Image, verbose: bool = False) -
             }
         ]
 
-        # Apply chat template
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-
-        # Process vision inputs
-        image_inputs, video_inputs = process_vision_info(messages)
-
-        # Process all inputs
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
+        # Official Qwen3-VL inference method (2025)
+        # apply_chat_template handles image processing internally
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
             return_tensors="pt",
         ).to(model.device)
 
-        # Generate response (greedy for speed and consistency)
+        # Generate response (greedy for consistent JSON output)
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=256,
                 do_sample=False,
                 use_cache=True,
-                temperature=None,
-                top_p=None,
-                top_k=None,
             )
 
-        # Decode (skip input tokens)
-        generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-        response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        # Decode output (official method)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, output_ids)
+        ]
+        response = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
 
         if verbose:
             print(f"    VL response: {response[:150]}...")

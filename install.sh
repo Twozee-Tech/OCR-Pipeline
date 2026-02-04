@@ -3,7 +3,7 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX-SPARK/main/install.sh | bash
 #
 # Installs a single 'ocr' command - no repo files left behind
-VERSION="2.1"
+VERSION="2.2"
 
 set -e
 

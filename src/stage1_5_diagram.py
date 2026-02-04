@@ -163,8 +163,6 @@ def describe_diagram(model, processor, image: Image.Image,
     Returns:
         str: Markdown description with ASCII art
     """
-    from qwen_vl_utils import process_vision_info
-
     if model is None or processor is None:
         return None
 
@@ -180,38 +178,39 @@ def describe_diagram(model, processor, image: Image.Image,
             }
         ]
 
-        # Apply chat template
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-
-        # Process vision inputs
-        image_inputs, video_inputs = process_vision_info(messages)
-
-        # Process all inputs
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
+        # Official Qwen3-VL inference method (2025)
+        # apply_chat_template handles image processing internally
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
             return_tensors="pt",
         ).to(model.device)
 
-        # Generate response (greedy decoding for speed)
+        # Generate response with sampling for better quality
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
-                max_new_tokens=2048,
-                do_sample=False,
+                max_new_tokens=1024,       # Reduced from 2048 for focused output
+                do_sample=True,            # Enable sampling for better quality
+                temperature=0.7,           # Balanced randomness
+                top_p=0.8,                 # Nucleus sampling
+                top_k=20,                  # Restrict token choices
+                repetition_penalty=1.05,   # Light repetition penalty
                 use_cache=True,
-                temperature=None,
-                top_p=None,
-                top_k=None,
             )
 
-        # Decode (skip input tokens)
-        generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-        response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        # Decode output (official method)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, output_ids)
+        ]
+        response = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
 
         if verbose:
             print(f"    Generated {len(response)} chars")
