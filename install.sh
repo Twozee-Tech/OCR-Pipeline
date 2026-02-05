@@ -182,6 +182,7 @@ curl -fsSL "$REPO_RAW/src/entrypoint.py" -o "$TEMP_DIR/src/entrypoint.py"
 curl -fsSL "$REPO_RAW/src/ocr_pipeline.py" -o "$TEMP_DIR/src/ocr_pipeline.py"
 curl -fsSL "$REPO_RAW/src/qwen_processor.py" -o "$TEMP_DIR/src/qwen_processor.py"
 curl -fsSL "$REPO_RAW/src/stage2_ocr.py" -o "$TEMP_DIR/src/stage2_ocr.py"
+curl -fsSL "$REPO_RAW/src/stage2_ocr_worker.py" -o "$TEMP_DIR/src/stage2_ocr_worker.py"
 
 # Generate config with actual model paths (relative to /workspace/models inside container)
 DEEPSEEK_NAME=$(basename "$DEEPSEEK_PATH")

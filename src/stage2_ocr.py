@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Stage 2: OCR Processing with DeepSeek-OCR via vLLM
+Stage 2: OCR Processing with DeepSeek-OCR via venv subprocess
 
 Processes PDF pages with content-aware prompts based on Stage 1 classifications.
+Uses subprocess to run DeepSeek-OCR-2 in a separate venv with transformers 4.47.1.
 
 Usage:
-    from stage2_ocr import create_ocr_llm, ocr_pages, pdf_to_page_images
+    from stage2_ocr import ocr_pages, pdf_to_page_images
 
-    llm = create_ocr_llm(model_path, config)
-    processor = AutoProcessor.from_pretrained(model_path)
     pages = pdf_to_page_images(pdf_path)
-    results = ocr_pages(llm, processor, image_paths, classifications)
+    results = ocr_pages(image_paths, classifications, config)
 """
 
 import os
@@ -18,14 +17,11 @@ import re
 import json
 import time
 import tempfile
+import subprocess
 import shutil
 from pathlib import Path
 from PIL import Image
 import io
-
-import torch
-from vllm import LLM, SamplingParams
-from transformers import AutoProcessor
 
 try:
     import fitz  # PyMuPDF
@@ -34,10 +30,9 @@ except ImportError:
 
 
 # =============================================================================
-# Prompts & Parameters
+# Prompts (for reference - actual prompts are in stage2_ocr_worker.py)
 # =============================================================================
 
-# Prompt strategies for different content types
 PROMPTS = {
     'text': "Convert this document page to markdown. Preserve all text formatting, headers, lists, and structure.",
     'document': "Convert this document page to markdown. Preserve all text formatting, headers, lists, and structure.",
@@ -48,128 +43,20 @@ PROMPTS = {
     'mixed': "Convert this document page to markdown. Preserve all text, tables, and describe any images or diagrams.",
 }
 
-OCR_PARAMS = SamplingParams(temperature=0, max_tokens=4096, top_k=-1)
-
 
 # =============================================================================
-# Model Creation
+# OCR Processing via Subprocess
 # =============================================================================
 
-def create_ocr_llm(model_path: str, config: dict = None) -> LLM:
+def ocr_pages(image_paths: list, classifications: list, config: dict,
+              verbose: bool = False, progress_callback=None) -> list:
     """
-    Create vLLM instance for DeepSeek-OCR model.
+    Run OCR on all pages using venv subprocess with DeepSeek-OCR-2.
 
     Args:
-        model_path: Path to DeepSeek-OCR model
-        config: Optional config dict with gpu_memory_utilization, max_model_len
-
-    Returns:
-        LLM: vLLM model instance
-    """
-    config = config or {}
-
-    return LLM(
-        model=model_path,
-        trust_remote_code=True,
-        gpu_memory_utilization=config.get('ocr_gpu_memory_utilization', 0.50),
-        max_model_len=config.get('ocr_max_model_len', 8192),
-        tensor_parallel_size=torch.cuda.device_count(),
-    )
-
-
-def unload_llm(llm: LLM):
-    """Unload vLLM model and free VRAM."""
-    if llm is not None:
-        del llm
-
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
-
-# =============================================================================
-# Prompt Selection
-# =============================================================================
-
-def get_prompt(classification: dict) -> str:
-    """
-    Get optimal OCR prompt based on classification.
-
-    Args:
-        classification: Dict with 'type' and 'confidence'
-
-    Returns:
-        str: Prompt for OCR
-    """
-    if classification is None:
-        return PROMPTS['mixed']
-
-    page_type = classification.get('type', 'mixed')
-    confidence = classification.get('confidence', 0.5)
-
-    # Low confidence -> safer mixed prompt
-    if confidence < 0.7:
-        return PROMPTS['mixed']
-
-    return PROMPTS.get(page_type, PROMPTS['mixed'])
-
-
-# =============================================================================
-# Input Preparation
-# =============================================================================
-
-def prepare_ocr_input(image_path: str, classification: dict, processor: AutoProcessor) -> dict:
-    """
-    Prepare OCR input for vLLM.
-
-    Args:
-        image_path: Path to page image
-        classification: Classification from Stage 1
-        processor: AutoProcessor
-
-    Returns:
-        dict: Input for vLLM generate()
-    """
-    prompt = get_prompt(classification)
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": f"file://{os.path.abspath(image_path)}"},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
-
-    # Apply chat template
-    text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-
-    # For DeepSeek-OCR, we use a simpler approach
-    # The model expects image in multi_modal_data
-    return {
-        "prompt": text,
-        "multi_modal_data": {"image": f"file://{os.path.abspath(image_path)}"},
-    }
-
-
-# =============================================================================
-# OCR Processing
-# =============================================================================
-
-def ocr_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
-              classifications: list, verbose: bool = False,
-              progress_callback=None) -> list:
-    """
-    Run OCR on all pages using vLLM batching.
-
-    Args:
-        llm: vLLM model instance
-        processor: AutoProcessor
         image_paths: List of paths to page images
         classifications: List of classifications from Stage 1
+        config: Configuration dict with 'deepseek_model_path'
         verbose: Print progress
         progress_callback: Optional callback(page_num, total)
 
@@ -178,6 +65,21 @@ def ocr_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
     """
     if not image_paths:
         return []
+
+    # Get venv Python path from environment
+    venv_python = os.environ.get('OCR_VENV_PYTHON', '/opt/venv_ocr/bin/python3')
+
+    # Get model path from config
+    model_path = config.get('deepseek_model_path')
+    if not model_path:
+        # Try default locations
+        for candidate in ['/workspace/models/DeepSeek-OCR-2-model', './DeepSeek-OCR-2-model']:
+            if os.path.exists(candidate):
+                model_path = candidate
+                break
+
+    if not model_path or not os.path.exists(model_path):
+        raise ValueError(f"DeepSeek model path not found. Set deepseek_model_path in config.")
 
     # Ensure classifications match pages
     while len(classifications) < len(image_paths):
@@ -189,41 +91,82 @@ def ocr_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
         })
 
     if verbose:
-        print(f"OCR processing {len(image_paths)} pages...")
+        print(f"OCR processing {len(image_paths)} pages via venv subprocess...")
 
-    # Prepare all inputs
-    inputs = [
-        prepare_ocr_input(path, cls, processor)
-        for path, cls in zip(image_paths, classifications)
-    ]
+    # Prepare input data
+    input_data = {
+        'image_paths': [os.path.abspath(p) for p in image_paths],
+        'classifications': classifications,
+        'model_path': model_path,
+    }
 
-    # Batch generate
-    start = time.time()
-    outputs = llm.generate(inputs, OCR_PARAMS)
+    # Create temp files for IPC
+    with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+        json.dump(input_data, f)
+        input_file = f.name
 
-    if verbose:
-        elapsed = time.time() - start
-        print(f"  Batch completed in {elapsed:.1f}s ({elapsed/len(image_paths):.1f}s/page)")
+    output_file = input_file.replace('.json', '_output.json')
 
-    # Process results
-    results = []
-    for i, (output, classification) in enumerate(zip(outputs, classifications)):
-        text = output.outputs[0].text
-        cleaned = clean_result(text, i + 1, [], classification)
+    try:
+        # Build command
+        worker_path = os.path.join(os.path.dirname(__file__), 'stage2_ocr_worker.py')
+        if not os.path.exists(worker_path):
+            worker_path = '/app/stage2_ocr_worker.py'
 
-        results.append({
-            'text': cleaned,
-            'figures': [],
-            'classification': classification,
-        })
-
-        if progress_callback:
-            progress_callback(i + 1, len(image_paths))
+        cmd = [venv_python, worker_path, input_file, output_file]
+        if verbose:
+            cmd.append('--verbose')
 
         if verbose:
-            print(f"  Page {i+1}: {len(cleaned)} chars [{classification.get('type', 'mixed')}]")
+            print(f"  Running: {' '.join(cmd)}")
 
-    return results
+        # Run worker subprocess
+        start = time.time()
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=not verbose,
+            text=True
+        )
+
+        if verbose:
+            elapsed = time.time() - start
+            print(f"  Subprocess completed in {elapsed:.1f}s")
+
+        # Load results
+        with open(output_file) as f:
+            results = json.load(f)
+
+        # Clean results
+        cleaned_results = []
+        for i, r in enumerate(results):
+            text = r.get('text', '')
+            classification = r.get('classification', classifications[i])
+            cleaned_text = clean_result(text, i + 1, [], classification)
+
+            cleaned_results.append({
+                'text': cleaned_text,
+                'figures': r.get('figures', []),
+                'classification': classification,
+            })
+
+            if progress_callback:
+                progress_callback(i + 1, len(image_paths))
+
+        return cleaned_results
+
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: OCR worker failed with code {e.returncode}")
+        if e.stderr:
+            print(f"STDERR: {e.stderr}")
+        raise
+
+    finally:
+        # Cleanup temp files
+        if os.path.exists(input_file):
+            os.unlink(input_file)
+        if os.path.exists(output_file):
+            os.unlink(output_file)
 
 
 # =============================================================================
@@ -344,7 +287,7 @@ def pdf_to_page_images(pdf_path: str, dpi: int = 200, verbose: bool = False) -> 
 
 def save_pages_to_temp(pages: list, temp_dir: str = None) -> list:
     """
-    Save PIL images to temp files for vLLM processing.
+    Save PIL images to temp files for processing.
 
     Args:
         pages: List of dicts with 'image' (PIL Image)
@@ -371,7 +314,7 @@ def save_pages_to_temp(pages: list, temp_dir: str = None) -> list:
 # Output Generation
 # =============================================================================
 
-def generate_markdown(results: list, pdf_name: str, method: str = 'vllm',
+def generate_markdown(results: list, pdf_name: str, method: str = 'transformers',
                       diagram_descriptions: dict = None) -> str:
     """
     Generate final markdown from OCR results.
@@ -421,9 +364,9 @@ def generate_markdown(results: list, pdf_name: str, method: str = 'vllm',
 
     # Build document
     if diagrams_used > 0:
-        converter_info = f"Qwen3-VL-30B ({diagrams_used} diagrams) + DeepSeek-OCR (vLLM)"
+        converter_info = f"Qwen3-VL-30B ({diagrams_used} diagrams) + DeepSeek-OCR (transformers)"
     else:
-        converter_info = f"Qwen3-VL-30B + DeepSeek-OCR (vLLM)"
+        converter_info = f"Qwen3-VL-30B + DeepSeek-OCR (transformers)"
 
     total_figures = sum(len(r.get('figures', [])) for r in results)
 

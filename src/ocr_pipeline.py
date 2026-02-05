@@ -38,8 +38,6 @@ from qwen_processor import (
     save_pages_to_temp,
 )
 from stage2_ocr import (
-    create_ocr_llm,
-    unload_llm as unload_ocr,
     ocr_pages,
     pdf_to_page_images,
     generate_markdown,
@@ -310,33 +308,13 @@ def run_pipeline(
         del qwen_processor
 
         # =====================================================================
-        # Stage 2: OCR Processing
+        # Stage 2: OCR Processing (via venv subprocess)
         # =====================================================================
         if verbose:
             print("\n" + "=" * 60)
-            print("STAGE 2: OCR Processing (DeepSeek-OCR-2)")
+            print("STAGE 2: OCR Processing (DeepSeek-OCR-2 via transformers)")
             print("=" * 60)
 
-        progress.update(stage="Stage 2: Loading OCR model")
-
-        # Find DeepSeek model
-        deepseek_path = find_model_path(
-            config, 'deepseek_model_path', None,
-            ['/workspace/models/DeepSeek-OCR-2-model', './DeepSeek-OCR-2-model']
-        )
-
-        if deepseek_path is None:
-            print("ERROR: DeepSeek-OCR model not found.")
-            print("Set deepseek_model_path in config or download to /workspace/models/")
-            sys.exit(1)
-
-        if verbose:
-            print(f"Loading DeepSeek-OCR from: {deepseek_path}")
-
-        ocr_llm = create_ocr_llm(deepseek_path, config)
-        ocr_processor = AutoProcessor.from_pretrained(deepseek_path, trust_remote_code=True)
-
-        # Run OCR
         progress.update(stage="Stage 2: Processing pages")
 
         def ocr_progress(page_num, total):
@@ -345,17 +323,12 @@ def run_pipeline(
                 f"Stage 2: OCR page {page_num}/{total}"
             )
 
+        # Run OCR via venv subprocess (model loading happens in worker)
         results = ocr_pages(
-            ocr_llm, ocr_processor, image_paths, classifications,
+            image_paths, classifications, config,
             verbose=verbose,
             progress_callback=None if verbose else ocr_progress
         )
-
-        # Unload OCR model
-        if verbose:
-            print("\nUnloading OCR model...")
-        unload_ocr(ocr_llm)
-        del ocr_processor
 
         progress.increment(num_pages, "Stage 2: Complete")
 
