@@ -1,9 +1,9 @@
 #!/bin/bash
-# Advanced OCR for NVIDIA DGX Spark - Installer v2.0
+# Advanced OCR for NVIDIA DGX Spark - Installer v3.0
 # Usage: curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX-SPARK/main/install.sh | bash
 #
 # Installs a single 'ocr' command - no repo files left behind
-VERSION="2.2"
+VERSION="3.0"
 
 set -e
 
@@ -38,7 +38,7 @@ ask() {
 
 echo -e "${BLUE}"
 echo "=============================================="
-echo "       OCR Pipeline - Installer v${VERSION}      "
+echo "     OCR Pipeline v${VERSION} - vLLM Edition     "
 echo "=============================================="
 echo -e "${NC}"
 
@@ -92,9 +92,8 @@ echo ""
 echo -e "${YELLOW}[3/5] Select models to download${NC}"
 echo ""
 echo "  Available models:"
-echo "    1) DeepSeek-OCR-2      (~8GB)  - Required"
-echo "    2) Qwen3-VL-8B         (~16GB) - Classification (recommended)"
-echo "    3) Qwen3-VL-32B        (~65GB) - Diagrams (optional)"
+echo "    1) DeepSeek-OCR-2      (~8GB)  - Required for text extraction"
+echo "    2) Qwen3-VL-30B        (~60GB) - Classification + diagrams"
 echo ""
 
 # Function to check if a directory contains a valid model (has config.json and weights)
@@ -123,46 +122,36 @@ find_model() {
 
 # Search for models with various naming conventions
 DEEPSEEK_PATTERNS="DeepSeek-OCR*,deepseek-ocr*,deepseek*OCR*"
-QWEN8B_PATTERNS="Qwen3-VL-8B*,Qwen*8B*,qwen*8b*"
-QWEN32B_PATTERNS="Qwen3-VL-32B*,Qwen*32B*,qwen*32b*"
+QWEN30B_PATTERNS="Qwen3-VL-30B*,Qwen*30B*,qwen*30b*"
 
 DEEPSEEK_PATH=$(find_model "$MODELS_DIR" "$DEEPSEEK_PATTERNS" 2>/dev/null || echo "")
-QWEN8B_PATH=$(find_model "$MODELS_DIR" "$QWEN8B_PATTERNS" 2>/dev/null || echo "")
-QWEN32B_PATH=$(find_model "$MODELS_DIR" "$QWEN32B_PATTERNS" 2>/dev/null || echo "")
+QWEN30B_PATH=$(find_model "$MODELS_DIR" "$QWEN30B_PATTERNS" 2>/dev/null || echo "")
 
 # Show what's found
 [ -n "$DEEPSEEK_PATH" ] && echo -e "  ${GREEN}✓${NC} DeepSeek-OCR-2 found: $(basename "$DEEPSEEK_PATH")"
-[ -n "$QWEN8B_PATH" ] && echo -e "  ${GREEN}✓${NC} Qwen3-VL-8B found: $(basename "$QWEN8B_PATH")"
-[ -n "$QWEN32B_PATH" ] && echo -e "  ${GREEN}✓${NC} Qwen3-VL-32B found: $(basename "$QWEN32B_PATH")"
+[ -n "$QWEN30B_PATH" ] && echo -e "  ${GREEN}✓${NC} Qwen3-VL-30B found: $(basename "$QWEN30B_PATH")"
 echo ""
 
 DL_DEEPSEEK="n"
-DL_QWEN8B="n"
-DL_QWEN32B="n"
+DL_QWEN30B="n"
 
 if [ -z "$DEEPSEEK_PATH" ]; then
     DL_DEEPSEEK=$(ask "  Download DeepSeek-OCR-2? (required) [Y/n]: " "Y")
     DEEPSEEK_PATH="$MODELS_DIR/DeepSeek-OCR-2-model"
 fi
 
-if [ -z "$QWEN8B_PATH" ]; then
-    DL_QWEN8B=$(ask "  Download Qwen3-VL-8B? (recommended) [Y/n]: " "Y")
-    QWEN8B_PATH="$MODELS_DIR/Qwen3-VL-8B-model"
+if [ -z "$QWEN30B_PATH" ]; then
+    DL_QWEN30B=$(ask "  Download Qwen3-VL-30B? (60GB, recommended) [Y/n]: " "Y")
+    QWEN30B_PATH="$MODELS_DIR/Qwen3-VL-30B-model"
 fi
 
-if [ -z "$QWEN32B_PATH" ]; then
-    DL_QWEN32B=$(ask "  Download Qwen3-VL-32B? (65GB, optional) [y/N]: " "N")
-    QWEN32B_PATH="$MODELS_DIR/Qwen3-VL-32B-Thinking"
-fi
-
-if [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] || [[ "$DL_QWEN8B" =~ ^[Yy] ]] || [[ "$DL_QWEN32B" =~ ^[Yy] ]]; then
+if [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] || [[ "$DL_QWEN30B" =~ ^[Yy] ]]; then
     echo ""
     echo -e "  ${BLUE}Downloading models...${NC}"
 
     DL_CMDS=""
     [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> DeepSeek-OCR-2...' && huggingface-cli download deepseek-ai/DeepSeek-OCR-2 --local-dir /models/DeepSeek-OCR-2-model && "
-    [[ "$DL_QWEN8B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-8B...' && huggingface-cli download Qwen/Qwen3-VL-8B-Instruct --local-dir /models/Qwen3-VL-8B-model && "
-    [[ "$DL_QWEN32B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-32B...' && huggingface-cli download Qwen/Qwen3-VL-32B-Instruct --local-dir /models/Qwen3-VL-32B-Thinking && "
+    [[ "$DL_QWEN30B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-30B...' && huggingface-cli download Qwen/Qwen3-VL-30B-A3B-Instruct --local-dir /models/Qwen3-VL-30B-model && "
     DL_CMDS+="echo '>>> Done!'"
 
     HAD_PYTHON_IMAGE=$(docker images -q python:3.11-slim 2>/dev/null)
@@ -191,22 +180,21 @@ mkdir -p "$TEMP_DIR/src" "$TEMP_DIR/config"
 curl -fsSL "$REPO_RAW/docker/Dockerfile" -o "$TEMP_DIR/Dockerfile"
 curl -fsSL "$REPO_RAW/src/entrypoint.py" -o "$TEMP_DIR/src/entrypoint.py"
 curl -fsSL "$REPO_RAW/src/ocr_pipeline.py" -o "$TEMP_DIR/src/ocr_pipeline.py"
-curl -fsSL "$REPO_RAW/src/stage1_classifier.py" -o "$TEMP_DIR/src/stage1_classifier.py"
-curl -fsSL "$REPO_RAW/src/stage1_5_diagram.py" -o "$TEMP_DIR/src/stage1_5_diagram.py"
+curl -fsSL "$REPO_RAW/src/qwen_processor.py" -o "$TEMP_DIR/src/qwen_processor.py"
 curl -fsSL "$REPO_RAW/src/stage2_ocr.py" -o "$TEMP_DIR/src/stage2_ocr.py"
 
 # Generate config with actual model paths (relative to /workspace/models inside container)
 DEEPSEEK_NAME=$(basename "$DEEPSEEK_PATH")
-QWEN8B_NAME=$(basename "$QWEN8B_PATH")
-QWEN32B_NAME=$(basename "$QWEN32B_PATH")
+QWEN30B_NAME=$(basename "$QWEN30B_PATH")
 
 cat > "$TEMP_DIR/config/ocr_config.json" << CONFIGEOF
 {
     "deepseek_model_path": "/workspace/models/$DEEPSEEK_NAME",
-    "qwen_model_path": "/workspace/models/$QWEN8B_NAME",
-    "qwen_describer_path": "/workspace/models/$QWEN32B_NAME",
-    "classifier": "qwen3-vl-8b",
-    "precision": "fp16",
+    "qwen_model_path": "/workspace/models/$QWEN30B_NAME",
+    "qwen_gpu_memory_utilization": 0.30,
+    "qwen_max_model_len": 6144,
+    "ocr_gpu_memory_utilization": 0.50,
+    "ocr_max_model_len": 8192,
     "describe_diagrams": false
 }
 CONFIGEOF
@@ -227,7 +215,7 @@ mkdir -p "$BIN_DIR"
 # Create self-contained ocr script with model path baked in
 cat > "$BIN_DIR/ocr" << WRAPPER
 #!/bin/bash
-# OCR Pipeline - Process PDFs with AI
+# OCR Pipeline v3.0 - Process PDFs with AI (vLLM)
 # Models: $MODELS_DIR
 
 MODELS_DIR="$MODELS_DIR"
@@ -236,7 +224,7 @@ if [ -z "\$1" ]; then
     echo "Usage: ocr <input.pdf> [output.md] [options]"
     echo ""
     echo "Options:"
-    echo "  --diagrams    Enable detailed diagram description (needs Qwen-32B)"
+    echo "  --diagrams    Enable detailed diagram description"
     echo ""
     echo "Examples:"
     echo "  ocr document.pdf                    # Output to ./output/document.md"
@@ -280,7 +268,7 @@ else
     mkdir -p "\$OUTPUT_DIR"
 fi
 
-echo "OCR Pipeline"
+echo "OCR Pipeline v3.0"
 echo "  Input:  \$INPUT_FILE"
 echo "  Output: \$OUTPUT_DIR/\$OUTPUT_NAME"
 echo ""
@@ -326,7 +314,6 @@ echo ""
 echo "Usage:"
 echo "  ocr document.pdf"
 echo "  ocr document.pdf --diagrams"
-echo "  ocr document.pdf --output /path/to/output"
 echo ""
 echo "Models: $MODELS_DIR"
 echo ""

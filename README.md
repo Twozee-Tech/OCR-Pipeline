@@ -1,6 +1,6 @@
 # Advanced OCR for NVIDIA DGX Spark
 
-AI-powered PDF to Markdown conversion using vision-language models. Combines Qwen3-VL for intelligent page classification with DeepSeek-OCR for content extraction.
+AI-powered PDF to Markdown conversion using vision-language models with vLLM for fast batched inference.
 
 ## Install
 
@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX
 **What it does:**
 - Checks Docker and GPU availability
 - Asks where to store models (default: `~/.cache/ocr-models`)
-- Downloads AI models from HuggingFace (~24GB for recommended setup)
+- Downloads AI models from HuggingFace (~68GB for full setup)
 - Builds the Docker image
 - Installs the `ocr` command to `~/.local/bin`
 
@@ -31,24 +31,24 @@ ocr document.pdf --diagrams           # With detailed diagram descriptions
 
 ## Requirements
 
-- NVIDIA GPU with 24GB+ VRAM
+- NVIDIA GPU with 48GB+ VRAM (for both models)
 - Docker with NVIDIA runtime
-- ~24GB disk space for models
+- ~68GB disk space for models
 
 ## How It Works
 
 ```
-PDF → [Stage 1: Qwen3-VL-8B] → Page Classification
+PDF → [Stage 1: Qwen3-VL-30B] → Page Classification
               ↓
-    [Stage 1.5: Qwen3-VL-32B] → Diagram Descriptions (optional)
+      [Optional: Qwen3-VL-30B] → Diagram Descriptions
               ↓
-      [Stage 2: DeepSeek-OCR] → Text Extraction
+      [Stage 2: DeepSeek-OCR-2] → Text Extraction
               ↓
            Markdown Output
 ```
 
 ### Stage 1: Classification
-Qwen3-VL-8B analyzes each page and classifies content:
+Qwen3-VL-30B analyzes each page and classifies content:
 - `text` - paragraphs, lists, headers
 - `table` - data tables
 - `diagram` - technical diagrams, UML, architecture
@@ -57,25 +57,24 @@ Qwen3-VL-8B analyzes each page and classifies content:
 - `mixed` - combination of content types
 
 ### Stage 1.5: Diagram Description (Optional)
-Qwen3-VL-32B generates detailed descriptions for diagram/flowchart pages:
-- ASCII art representations
+Same Qwen3-VL-30B model generates detailed descriptions for diagram/flowchart pages:
+- Mermaid sequence diagrams
 - Step-by-step flow descriptions
 - Component relationships
 
-Enable with `--diagrams` flag (requires 64GB+ VRAM).
+Enable with `--diagrams` flag.
 
 ### Stage 2: OCR
-DeepSeek-OCR extracts content using classification-optimized prompts.
+DeepSeek-OCR-2 extracts content using classification-optimized prompts.
 
 ## Models
 
 | Model | Size | VRAM | Purpose |
 |-------|------|------|---------|
 | DeepSeek-OCR-2 | ~8GB | ~10GB | Text extraction (required) |
-| Qwen3-VL-8B | ~16GB | ~16GB | Page classification (recommended) |
-| Qwen3-VL-32B | ~65GB | ~64GB | Diagram descriptions (optional) |
+| Qwen3-VL-30B | ~60GB | ~30GB | Classification + diagrams |
 
-Models load sequentially, not simultaneously.
+Models load sequentially via vLLM, not simultaneously.
 
 ## Project Structure
 
@@ -88,8 +87,7 @@ Models load sequentially, not simultaneously.
 ├── src/
 │   ├── entrypoint.py
 │   ├── ocr_pipeline.py
-│   ├── stage1_classifier.py
-│   ├── stage1_5_diagram.py
+│   ├── qwen_processor.py
 │   └── stage2_ocr.py
 ├── config/
 │   └── ocr_config.json
