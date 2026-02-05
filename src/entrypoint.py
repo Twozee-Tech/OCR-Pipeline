@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Docker entrypoint for OCR Pipeline."""
+"""Docker entrypoint for OCR Pipeline v3.0."""
 import os
 import sys
 import glob
@@ -26,8 +26,6 @@ def main():
 
     # Build args
     args = [input_pdf, output_md]
-    args.extend(['--classifier', os.environ.get('OCR_CLASSIFIER', 'qwen3-vl-8b')])
-    args.extend(['--precision', os.environ.get('OCR_PRECISION', 'fp16')])
 
     if os.environ.get('OCR_DESCRIBE_DIAGRAMS', 'false').lower() == 'true':
         args.append('--describe-diagrams')
@@ -35,7 +33,7 @@ def main():
     args.extend(['--dpi', os.environ.get('OCR_DPI', '200')])
     args.append('--verbose')
 
-    print(f"OCR Pipeline starting...")
+    print(f"OCR Pipeline v3.0 starting...")
     print(f"  Input:  {input_pdf}")
     print(f"  Output: {output_md}")
     print(f"  Args:   {' '.join(args)}")

@@ -1,29 +1,10 @@
-FROM nvcr.io/nvidia/pytorch:25.12-py3
+FROM nvcr.io/nvidia/vllm:26.01-py3
 
-# System dependencies for DeepSeek-OCR (needs transformers==4.46.3)
 RUN pip install --no-cache-dir \
-    transformers==4.46.3 \
-    tokenizers \
+    qwen-vl-utils>=0.0.14 \
     PyMuPDF \
-    einops \
-    easydict \
-    addict \
-    Pillow \
-    numpy \
-    safetensors \
-    accelerate \
-    sentencepiece \
-    huggingface_hub
+    Pillow
 
-# Create venv for Qwen (needs newer transformers >=4.57)
-# Use --system-site-packages to inherit system torch/cuda
-# Only upgrade transformers, don't reinstall torch
-RUN python3 -m venv --system-site-packages /opt/venv_qwen && \
-    /opt/venv_qwen/bin/pip install --no-cache-dir \
-    "transformers>=4.57.0" \
-    qwen-vl-utils
-
-# Copy pipeline code (paths relative to build context)
 COPY src/*.py /app/
 COPY config/ocr_config.json /app/
 WORKDIR /app
@@ -31,11 +12,9 @@ WORKDIR /app
 # Create directories
 RUN mkdir -p /data/input /data/output
 
-# Environment defaults
-ENV OCR_CLASSIFIER=qwen3-vl-8b \
-    OCR_PRECISION=fp16 \
+ENV VLLM_WORKER_MULTIPROC_METHOD=spawn \
+    OMP_NUM_THREADS=1 \
     OCR_DESCRIBE_DIAGRAMS=false \
-    OCR_DPI=200 \
-    OCR_VENV_PYTHON=/opt/venv_qwen/bin/python3
+    OCR_DPI=200
 
 ENTRYPOINT ["python3", "/app/entrypoint.py"]

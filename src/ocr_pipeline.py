@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-OCR Pipeline Orchestrator
+OCR Pipeline v3.0 - vLLM Edition
 
-Three-stage PDF to Markdown conversion:
-  Stage 1:   Qwen3-VL-8B classifies pages (runs in venv_qwen)
-  Stage 1.5: Qwen3-VL-32B describes diagrams (runs in venv_qwen) [optional]
-  Stage 2:   DeepSeek-OCR processes pages (runs in system Python)
+Two-stage PDF to Markdown conversion using vLLM for fast batched inference:
+  Stage 1: Qwen3-VL-30B classifies pages + describes diagrams
+  Stage 2: DeepSeek-OCR-2 processes pages with content-aware prompts
 
 Usage:
-    python3 ocr_pipeline.py input.pdf [output.md] [--classifier qwen3-vl-8b|heuristic]
+    python3 ocr_pipeline.py input.pdf [output.md] [-v] [--diagrams]
 
-    # With diagram description (recommended for documents with flowcharts/diagrams)
-    python3 ocr_pipeline.py input.pdf --classifier qwen3-vl-8b --describe-diagrams
+    # Basic usage
+    python3 ocr_pipeline.py document.pdf
 
-Setup required:
-    ./setup.sh  # Creates venv_qwen for Stage 1 and Stage 1.5
+    # With diagram description
+    python3 ocr_pipeline.py document.pdf --describe-diagrams
+
+    # Verbose output
+    python3 ocr_pipeline.py document.pdf -v
 """
 
 import json
@@ -22,9 +24,26 @@ import sys
 import os
 import time
 import argparse
-import subprocess
+import tempfile
 import shutil
 from pathlib import Path
+
+from transformers import AutoProcessor
+
+from qwen_processor import (
+    create_qwen_llm,
+    unload_llm as unload_qwen,
+    classify_pages,
+    describe_diagrams,
+    save_pages_to_temp,
+)
+from stage2_ocr import (
+    create_ocr_llm,
+    unload_llm as unload_ocr,
+    ocr_pages,
+    pdf_to_page_images,
+    generate_markdown,
+)
 
 
 # =============================================================================
@@ -56,7 +75,6 @@ class ProgressBar:
         filled = int(self.width * percent / 100)
         bar = "█" * filled + "░" * (self.width - filled)
 
-        # Clear line and print progress
         stage_text = f" | {self.stage}" if self.stage else ""
         sys.stdout.write(f"\r{self.prefix}: [{bar}] {percent:3d}%{stage_text}    ")
         sys.stdout.flush()
@@ -73,22 +91,18 @@ class ProgressBar:
         self.update()
         print(f"\n{message}")
 
-# Stage 2 imports (system Python)
-from stage2_ocr import (
-    load_model as load_ocr,
-    unload_model as unload_ocr,
-    ocr_pages,
-    pdf_to_page_images,
-    generate_markdown,
-)
 
-# Diagram types that trigger Stage 1.5
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Diagram types that trigger description
 DIAGRAM_TYPES = {'diagram', 'flowchart'}
-
 
 # Config file paths
 CONFIG_PATHS = [
     './ocr_config.json',
+    '/app/ocr_config.json',
     '/workspace/ocr_config.json',
     '/workspace/data/ocr_config.json',
     os.path.expanduser('~/.ocr_config.json'),
@@ -112,220 +126,51 @@ def load_config(config_path: str = None) -> dict:
     return {}
 
 
-def find_deepseek_model(config: dict, custom_path: str = None) -> str:
-    """Find DeepSeek-OCR model path."""
+def find_model_path(config: dict, key: str, custom_path: str = None, candidates: list = None) -> str:
+    """Find model path from config, custom path, or candidate locations."""
     if custom_path and os.path.exists(custom_path):
         return custom_path
 
-    if config.get('deepseek_model_path') and os.path.exists(config['deepseek_model_path']):
-        return config['deepseek_model_path']
+    if config.get(key) and os.path.exists(config[key]):
+        return config[key]
 
-    candidates = [
-        './DeepSeek-OCR-model',
-        '../DeepSeek-OCR-model',
-        '/workspace/DeepSeek-OCR-model',
-        '/workspace/models/DeepSeek-OCR-model',
-        os.path.expanduser('~/DeepSeek-OCR-model'),
-    ]
-
-    for path in candidates:
+    for path in (candidates or []):
         if os.path.exists(path):
             return path
 
     return None
 
 
-def find_venv_python() -> str:
-    """Find Python executable in venv_qwen."""
-    # Check env var first (for Docker)
-    env_venv = os.environ.get('OCR_VENV_PYTHON')
-    if env_venv and os.path.exists(env_venv):
-        return env_venv
-
-    script_dir = Path(__file__).parent
-    venv_python = script_dir / "venv_qwen" / "bin" / "python3"
-
-    if venv_python.exists():
-        return str(venv_python)
-
-    # Try relative to cwd
-    venv_python = Path("venv_qwen") / "bin" / "python3"
-    if venv_python.exists():
-        return str(venv_python)
-
-    return None
-
-
-def run_stage1_subprocess(
-    pdf_path: str,
-    output_json: str,
-    model_path: str = None,
-    precision: str = "fp16",
-    heuristic: bool = False,
-    dpi: int = 200,
-    verbose: bool = False
-) -> bool:
-    """
-    Run Stage 1 classifier as subprocess in venv.
-
-    Returns True on success, False on failure.
-    """
-    script_dir = Path(__file__).parent
-    stage1_script = script_dir / "stage1_classifier.py"
-
-    # Find venv Python
-    venv_python = find_venv_python()
-
-    if venv_python is None and not heuristic:
-        print("WARNING: venv_qwen not found. Run ./setup.sh first.")
-        print("         Falling back to heuristic classification.")
-        heuristic = True
-
-    # Build command
-    if heuristic:
-        # Use system Python for heuristic
-        python_exe = sys.executable
-    else:
-        python_exe = venv_python
-
-    cmd = [
-        python_exe,
-        str(stage1_script),
-        pdf_path,
-        "-o", output_json,
-        "--dpi", str(dpi),
-    ]
-
-    if heuristic:
-        cmd.append("--heuristic")
-    else:
-        if model_path:
-            cmd.extend(["-m", model_path])
-        cmd.extend(["-p", precision])
-
-    if verbose:
-        cmd.append("-v")
-
-    # Run subprocess
-    print(f"\n--- Running Stage 1 {'(heuristic)' if heuristic else '(Qwen3-VL in venv)'} ---")
-    print(f"Command: {' '.join(cmd)}")
-    print()
-
-    try:
-        # Run with real-time output (no capture)
-        result = subprocess.run(
-            cmd,
-            check=True,
-        )
-
-        return True
-
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Stage 1 failed with exit code {e.returncode}")
-        if e.stdout:
-            print(f"STDOUT: {e.stdout}")
-        if e.stderr:
-            print(f"STDERR: {e.stderr}")
-        return False
-
-    except FileNotFoundError as e:
-        print(f"ERROR: Could not run Stage 1: {e}")
-        return False
-
-
-def run_stage1_5_subprocess(
-    pdf_path: str,
-    classifications_json: str,
-    output_json: str,
-    model_path: str = None,
-    precision: str = "fp16",
-    dpi: int = 200,
-    verbose: bool = False
-) -> bool:
-    """
-    Run Stage 1.5 diagram describer as subprocess in venv.
-
-    Uses Qwen3-VL-32B to generate detailed descriptions with ASCII art
-    for diagram and flowchart pages.
-
-    Returns True on success, False on failure.
-    """
-    script_dir = Path(__file__).parent
-    stage1_5_script = script_dir / "stage1_5_diagram.py"
-
-    if not stage1_5_script.exists():
-        print(f"WARNING: stage1_5_diagram.py not found at {stage1_5_script}")
-        return False
-
-    # Find venv Python
-    venv_python = find_venv_python()
-
-    if venv_python is None:
-        print("WARNING: venv_qwen not found. Run ./setup.sh first.")
-        print("         Skipping Stage 1.5 diagram description.")
-        return False
-
-    # Build command
-    cmd = [
-        venv_python,
-        str(stage1_5_script),
-        pdf_path,
-        "-c", classifications_json,
-        "-o", output_json,
-        "--dpi", str(dpi),
-        "-p", precision,
-    ]
-
-    if model_path:
-        cmd.extend(["-m", model_path])
-
-    if verbose:
-        cmd.append("-v")
-
-    # Run subprocess
-    print(f"\n--- Running Stage 1.5 (Qwen3-VL-32B diagram description) ---")
-    print(f"Command: {' '.join(cmd)}")
-    print()
-
-    try:
-        # Run with real-time output (no capture)
-        result = subprocess.run(
-            cmd,
-            check=True,
-        )
-
-        return True
-
-    except subprocess.CalledProcessError as e:
-        print(f"WARNING: Stage 1.5 failed with exit code {e.returncode}")
-        print("         Continuing without diagram descriptions.")
-        return False
-
-    except FileNotFoundError as e:
-        print(f"WARNING: Could not run Stage 1.5: {e}")
-        return False
-
+# =============================================================================
+# Pipeline
+# =============================================================================
 
 def run_pipeline(
     pdf_path: str,
     output_path: str = None,
-    classifier: str = 'heuristic',
-    classifier_precision: str = 'fp16',
-    deepseek_model_path: str = None,
-    qwen_model_path: str = None,
-    qwen_describer_path: str = None,
-    describe_diagrams: bool = False,
+    describe_diagrams_flag: bool = False,
     dpi: int = 200,
     verbose: bool = False,
     keep_assets: bool = False,
     config: dict = None
 ) -> str:
     """
-    Run the full three-stage OCR pipeline.
+    Run the two-stage OCR pipeline with vLLM.
 
-    Stage 1:   Qwen3-VL-8B classifies pages (subprocess in venv)
-    Stage 1.5: Qwen3-VL-32B describes diagrams (subprocess in venv) [optional]
-    Stage 2:   DeepSeek-OCR processes pages (current Python)
+    Stage 1: Qwen3-VL-30B classifies pages + describes diagrams
+    Stage 2: DeepSeek-OCR-2 processes pages with content-aware prompts
+
+    Args:
+        pdf_path: Path to input PDF
+        output_path: Path to output markdown (default: input.md)
+        describe_diagrams_flag: Generate detailed diagram descriptions
+        dpi: PDF rendering resolution
+        verbose: Print detailed progress
+        keep_assets: Keep intermediate files
+        config: Configuration dict
+
+    Returns:
+        str: Path to output markdown file
     """
     config = config or {}
     pdf_path = Path(pdf_path)
@@ -339,240 +184,226 @@ def run_pipeline(
         output_path = pdf_path.with_suffix('.md')
     output_path = Path(output_path)
 
-    # Create output directory
-    output_dir = output_path.parent / f"{output_path.stem}_assets"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Create temp directory for page images
+    temp_dir = tempfile.mkdtemp(prefix="ocr_pipeline_")
 
     # Show header
     if verbose:
         print("=" * 60)
-        print("OCR Pipeline - Three-Stage Processing")
+        print("OCR Pipeline v3.0 - vLLM Edition")
         print("=" * 60)
         print(f"Input:            {pdf_path}")
         print(f"Output:           {output_path}")
-        print(f"Assets:           {output_dir}")
-        print(f"Classifier:       {classifier} ({classifier_precision})")
-        print(f"Describe diagrams: {describe_diagrams}")
+        print(f"Describe diagrams: {describe_diagrams_flag}")
         print()
     else:
         print(f"OCR: {pdf_path.name} → {output_path.name}")
 
     total_start = time.time()
 
-    # Get page count for progress tracking (quick PDF open)
-    import fitz
-    with fitz.open(str(pdf_path)) as pdf:
-        num_pages = pdf.page_count
+    try:
+        # =====================================================================
+        # Load PDF pages
+        # =====================================================================
+        if verbose:
+            print("Loading PDF pages...")
 
-    # Calculate total steps: Stage1 + Stage1.5(optional) + Stage2 + Final
-    # Weight: Stage1=1x, Stage1.5=1x per diagram, Stage2=2x per page (slower), Final=1
-    total_steps = num_pages + (num_pages * 2) + 1  # Stage1 + Stage2 + Final
-    if describe_diagrams:
-        total_steps += num_pages // 2  # Estimate ~50% might be diagrams
+        pages = pdf_to_page_images(str(pdf_path), dpi=dpi, verbose=verbose)
+        num_pages = len(pages)
 
-    progress = ProgressBar(total_steps, prefix="OCR")
-    progress.enabled = not verbose
+        # Save pages to temp files for vLLM (requires file:// URIs)
+        image_paths = save_pages_to_temp(pages, temp_dir)
 
-    # =========================================================================
-    # Stage 1: Classification (subprocess in venv)
-    # =========================================================================
-    if verbose:
-        print("=" * 60)
-        print("STAGE 1: Page Classification")
-        print("=" * 60)
+        if verbose:
+            print(f"Saved {num_pages} page images to temp directory")
 
-    progress.update(0, "Stage 1: Classifying pages")
+        # Calculate progress steps
+        total_steps = num_pages * 2 + 1  # classify + OCR + final
+        if describe_diagrams_flag:
+            total_steps += num_pages // 2
 
-    classifications_file = output_dir / "classifications.json"
-    qwen_path = qwen_model_path or config.get('qwen_model_path')
+        progress = ProgressBar(total_steps, prefix="OCR")
+        progress.enabled = not verbose
 
-    success = run_stage1_subprocess(
-        pdf_path=str(pdf_path),
-        output_json=str(classifications_file),
-        model_path=qwen_path,
-        precision=classifier_precision,
-        heuristic=(classifier == 'heuristic'),
-        dpi=dpi,
-        verbose=verbose
-    )
-
-    if not success:
-        print("\nERROR: Stage 1 failed. Aborting pipeline.")
-        sys.exit(1)
-
-    # Load classifications
-    with open(classifications_file, 'r') as f:
-        class_data = json.load(f)
-
-    classifications = class_data.get('classifications', [])
-    classifier_method = class_data.get('method', 'unknown')
-
-    progress.increment(num_pages, "Stage 1: Complete")
-
-    # Print summary (verbose only)
-    if verbose:
-        content_types = {}
-        for c in classifications:
-            ct = c.get('type', 'unknown')
-            content_types[ct] = content_types.get(ct, 0) + 1
-        print(f"\nContent types: {content_types}")
-        print(f"Classifications saved to: {classifications_file}")
-
-    # =========================================================================
-    # Stage 1.5: Diagram Description (optional)
-    # =========================================================================
-    diagram_descriptions = {}
-    descriptions_file = output_dir / "diagram_descriptions.json"
-
-    # Check if there are diagram pages and describe_diagrams is enabled
-    # Include diagram/flowchart pages AND mixed pages that have diagrams
-    diagram_pages = [c for c in classifications
-                     if c.get('type', '').lower() in DIAGRAM_TYPES
-                     or (c.get('type', '').lower() == 'mixed' and c.get('has_diagrams', False))]
-
-    if describe_diagrams and diagram_pages:
+        # =====================================================================
+        # Stage 1: Qwen Classification + Diagram Description
+        # =====================================================================
         if verbose:
             print("\n" + "=" * 60)
-            print(f"STAGE 1.5: Diagram Description ({len(diagram_pages)} pages)")
+            print("STAGE 1: Page Classification (Qwen3-VL-30B)")
             print("=" * 60)
 
-        progress.update(stage=f"Stage 1.5: Describing {len(diagram_pages)} diagrams")
-        describer_path = qwen_describer_path or config.get('qwen_describer_path')
+        progress.update(0, "Stage 1: Loading Qwen model")
 
-        success = run_stage1_5_subprocess(
-            pdf_path=str(pdf_path),
-            classifications_json=str(classifications_file),
-            output_json=str(descriptions_file),
-            model_path=describer_path,
-            precision=classifier_precision,
-            dpi=dpi,
-            verbose=verbose
+        # Find Qwen model
+        qwen_path = find_model_path(
+            config, 'qwen_model_path', None,
+            ['/workspace/models/Qwen3-VL-30B-model', './Qwen3-VL-30B-model']
         )
 
-        if success and descriptions_file.exists():
-            with open(descriptions_file, 'r') as f:
-                desc_data = json.load(f)
-            # Convert string keys to int for page numbers
-            raw_descriptions = desc_data.get('descriptions', {})
-            diagram_descriptions = {int(k): v for k, v in raw_descriptions.items()}
-            if verbose:
-                print(f"Loaded {len(diagram_descriptions)} diagram descriptions")
-        else:
-            if verbose:
-                print("No diagram descriptions generated (Stage 1.5 skipped or failed)")
+        if qwen_path is None:
+            print("ERROR: Qwen3-VL model not found.")
+            print("Set qwen_model_path in config or download to /workspace/models/")
+            sys.exit(1)
 
-        progress.increment(len(diagram_pages), "Stage 1.5: Complete")
-
-    elif describe_diagrams and not diagram_pages:
         if verbose:
-            print("\nNo diagram/flowchart pages found - skipping Stage 1.5")
+            print(f"Loading Qwen3-VL from: {qwen_path}")
 
-    elif diagram_pages and verbose:
-        print(f"\nNote: Found {len(diagram_pages)} diagram pages. Use --describe-diagrams for better output.")
+        qwen_llm = create_qwen_llm(qwen_path, config)
+        qwen_processor = AutoProcessor.from_pretrained(qwen_path, trust_remote_code=True)
 
-    # =========================================================================
-    # Stage 2: OCR Processing (system Python)
-    # =========================================================================
-    if verbose:
-        print("\n" + "=" * 60)
-        print("STAGE 2: OCR Processing (DeepSeek-OCR)")
-        print("=" * 60)
+        # Classify pages
+        progress.update(stage="Stage 1: Classifying pages")
+        classifications = classify_pages(qwen_llm, qwen_processor, image_paths, verbose=verbose)
 
-    progress.update(stage="Stage 2: Loading OCR model")
+        progress.increment(num_pages, "Stage 1: Classification complete")
 
-    # Find DeepSeek model
-    deepseek_path = find_deepseek_model(config, deepseek_model_path)
-    if deepseek_path is None:
-        print("\nERROR: DeepSeek-OCR model not found.")
-        print("Download: git clone https://huggingface.co/deepseek-ai/DeepSeek-OCR DeepSeek-OCR-model")
-        sys.exit(1)
-
-    # Load model
-    ocr_model, tokenizer = load_ocr(deepseek_path, verbose=verbose)
-
-    # Convert PDF to images (for Stage 2)
-    progress.update(stage="Stage 2: Converting PDF")
-    pages = pdf_to_page_images(str(pdf_path), dpi=dpi, verbose=verbose)
-
-    # Validate classification count
-    if len(classifications) != len(pages):
+        # Print classification summary
         if verbose:
-            print(f"WARNING: Classification count mismatch ({len(classifications)} vs {len(pages)} pages)")
-        # Pad or truncate
-        while len(classifications) < len(pages):
-            classifications.append({
-                'page': len(classifications) + 1,
-                'type': 'mixed',
-                'confidence': 0.5,
-                'method': 'default'
-            })
+            content_types = {}
+            for c in classifications:
+                ct = c.get('type', 'unknown')
+                content_types[ct] = content_types.get(ct, 0) + 1
+            print(f"\nContent types: {content_types}")
 
-    # Run OCR with progress callback
-    if verbose:
-        print(f"\nProcessing {len(pages)} pages...")
+        # =====================================================================
+        # Stage 1.5: Diagram Description (optional)
+        # =====================================================================
+        diagram_descriptions = {}
 
-    def ocr_progress(page_num, total):
-        progress.update(
-            num_pages + (page_num * 2),
-            f"Stage 2: OCR page {page_num}/{total}"
+        # Find diagram pages
+        diagram_pages = [
+            c for c in classifications
+            if c.get('type', '').lower() in DIAGRAM_TYPES
+            or (c.get('type', '').lower() == 'mixed' and c.get('has_diagrams', False))
+        ]
+
+        if describe_diagrams_flag and diagram_pages:
+            if verbose:
+                print("\n" + "=" * 60)
+                print(f"STAGE 1.5: Diagram Description ({len(diagram_pages)} pages)")
+                print("=" * 60)
+
+            progress.update(stage=f"Stage 1.5: Describing {len(diagram_pages)} diagrams")
+
+            diagram_descriptions = describe_diagrams(
+                qwen_llm, qwen_processor, image_paths,
+                classifications=classifications, verbose=verbose
+            )
+
+            progress.increment(len(diagram_pages), "Stage 1.5: Complete")
+
+            if verbose:
+                print(f"Generated {len(diagram_descriptions)} diagram descriptions")
+
+        elif describe_diagrams_flag and not diagram_pages:
+            if verbose:
+                print("\nNo diagram/flowchart pages found - skipping Stage 1.5")
+
+        elif diagram_pages and verbose:
+            print(f"\nNote: Found {len(diagram_pages)} diagram pages. Use --describe-diagrams for better output.")
+
+        # Unload Qwen to free VRAM
+        if verbose:
+            print("\nUnloading Qwen model...")
+        unload_qwen(qwen_llm)
+        del qwen_processor
+
+        # =====================================================================
+        # Stage 2: OCR Processing
+        # =====================================================================
+        if verbose:
+            print("\n" + "=" * 60)
+            print("STAGE 2: OCR Processing (DeepSeek-OCR-2)")
+            print("=" * 60)
+
+        progress.update(stage="Stage 2: Loading OCR model")
+
+        # Find DeepSeek model
+        deepseek_path = find_model_path(
+            config, 'deepseek_model_path', None,
+            ['/workspace/models/DeepSeek-OCR-2-model', './DeepSeek-OCR-2-model']
         )
 
-    results = ocr_pages(
-        ocr_model, tokenizer, pages, classifications,
-        str(output_dir), verbose,
-        progress_callback=None if verbose else ocr_progress
-    )
+        if deepseek_path is None:
+            print("ERROR: DeepSeek-OCR model not found.")
+            print("Set deepseek_model_path in config or download to /workspace/models/")
+            sys.exit(1)
 
-    # Unload model
-    unload_ocr(ocr_model, tokenizer, verbose=verbose)
-    progress.increment(num_pages * 2, "Stage 2: Complete")
+        if verbose:
+            print(f"Loading DeepSeek-OCR from: {deepseek_path}")
 
-    # =========================================================================
-    # Generate Output
-    # =========================================================================
-    progress.update(stage="Generating output")
+        ocr_llm = create_ocr_llm(deepseek_path, config)
+        ocr_processor = AutoProcessor.from_pretrained(deepseek_path, trust_remote_code=True)
 
-    if verbose:
-        print("\n" + "=" * 60)
-        print("Generating Output")
-        print("=" * 60)
+        # Run OCR
+        progress.update(stage="Stage 2: Processing pages")
 
-    markdown = generate_markdown(
-        results, pdf_path.stem, classifier_method,
-        diagram_descriptions=diagram_descriptions
-    )
+        def ocr_progress(page_num, total):
+            progress.update(
+                num_pages + page_num,
+                f"Stage 2: OCR page {page_num}/{total}"
+            )
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(markdown)
+        results = ocr_pages(
+            ocr_llm, ocr_processor, image_paths, classifications,
+            verbose=verbose,
+            progress_callback=None if verbose else ocr_progress
+        )
 
-    progress.increment(1)
+        # Unload OCR model
+        if verbose:
+            print("\nUnloading OCR model...")
+        unload_ocr(ocr_llm)
+        del ocr_processor
 
-    # =========================================================================
-    # Summary
-    # =========================================================================
-    total_time = time.time() - total_start
-    total_chars = sum(len(r.get('text', '')) for r in results)
-    total_figures = sum(len(r.get('figures', [])) for r in results)
+        progress.increment(num_pages, "Stage 2: Complete")
 
-    # Cleanup assets unless --keep-assets
-    if not keep_assets and output_dir.exists():
-        shutil.rmtree(output_dir)
+        # =====================================================================
+        # Generate Output
+        # =====================================================================
+        progress.update(stage="Generating output")
 
-    # Final message
-    progress.finish(f"Done in {total_time:.1f}s → {output_path}")
+        if verbose:
+            print("\n" + "=" * 60)
+            print("Generating Output")
+            print("=" * 60)
 
-    if verbose:
-        print(f"\nCompleted in {total_time:.1f}s ({total_time/len(pages):.1f}s per page)")
-        print(f"Total characters: {total_chars}")
-        print(f"Figures extracted: {total_figures}")
-        print(f"Output: {output_path}")
-        if not keep_assets:
-            print(f"Cleaned up: {output_dir}")
-        else:
-            print(f"Assets kept: {output_dir}")
-        print("=" * 60)
+        markdown = generate_markdown(
+            results, pdf_path.stem, 'deepseek-ocr',
+            diagram_descriptions=diagram_descriptions
+        )
 
-    return str(output_path)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(markdown)
+
+        progress.increment(1)
+
+        # =====================================================================
+        # Summary
+        # =====================================================================
+        total_time = time.time() - total_start
+        total_chars = sum(len(r.get('text', '')) for r in results)
+        total_figures = sum(len(r.get('figures', [])) for r in results)
+
+        progress.finish(f"Done in {total_time:.1f}s → {output_path}")
+
+        if verbose:
+            print(f"\nCompleted in {total_time:.1f}s ({total_time/num_pages:.1f}s per page)")
+            print(f"Total characters: {total_chars}")
+            print(f"Figures extracted: {total_figures}")
+            print(f"Diagrams described: {len(diagram_descriptions)}")
+            print(f"Output: {output_path}")
+            print("=" * 60)
+
+        return str(output_path)
+
+    finally:
+        # Cleanup temp directory
+        if not keep_assets and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        elif keep_assets:
+            print(f"Temp files kept: {temp_dir}")
 
 
 # =============================================================================
@@ -582,67 +413,47 @@ def run_pipeline(
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="OCR Pipeline - Three-Stage PDF to Markdown",
+        description="OCR Pipeline v3.0 - vLLM Edition",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Setup:
-  ./setup.sh  # Creates venv_qwen for Qwen3-VL models
-
 Examples:
-  # With Qwen3-VL-8B classifier (requires venv)
-  python3 ocr_pipeline.py document.pdf --classifier qwen3-vl-8b
+  # Basic usage
+  python3 ocr_pipeline.py document.pdf
 
-  # With diagram description (recommended for diagrams/flowcharts)
-  python3 ocr_pipeline.py document.pdf --classifier qwen3-vl-8b --describe-diagrams
+  # With diagram description
+  python3 ocr_pipeline.py document.pdf --describe-diagrams
 
-  # Heuristic classification (no venv needed)
-  python3 ocr_pipeline.py document.pdf --classifier heuristic
+  # Verbose output
+  python3 ocr_pipeline.py document.pdf -v
 
-  # Full options
-  python3 ocr_pipeline.py document.pdf output.md --classifier qwen3-vl-8b --describe-diagrams -v
+  # Custom output path
+  python3 ocr_pipeline.py document.pdf output.md
 """
     )
 
     parser.add_argument('input_pdf', help='Input PDF file')
     parser.add_argument('output_md', nargs='?', default=None, help='Output markdown file')
 
-    parser.add_argument(
-        '--classifier', '-c',
-        choices=['qwen3-vl-8b', 'heuristic'],
-        default=None,
-        help='Page classifier (default from config or heuristic)'
-    )
-
-    parser.add_argument(
-        '--precision', '-p',
-        choices=['fp16', 'fp8'],
-        default=None,
-        help='Classifier precision (default: fp16)'
-    )
-
     # Diagram description options
     diagram_group = parser.add_mutually_exclusive_group()
     diagram_group.add_argument(
-        '--describe-diagrams',
+        '--describe-diagrams', '--diagrams',
         action='store_true',
         dest='describe_diagrams',
-        help='Use Qwen3-VL-32B to describe diagram/flowchart pages with ASCII art'
+        help='Generate detailed descriptions for diagram/flowchart pages'
     )
     diagram_group.add_argument(
         '--no-describe-diagrams',
         action='store_false',
         dest='describe_diagrams',
-        help='Skip diagram description (faster, uses DeepSeek only)'
+        help='Skip diagram description (faster)'
     )
     parser.set_defaults(describe_diagrams=None)
 
-    parser.add_argument('--deepseek-model', default=None, help='Path to DeepSeek-OCR model')
-    parser.add_argument('--qwen-model', default=None, help='Path to Qwen3-VL-8B classifier model')
-    parser.add_argument('--qwen-describer', default=None, help='Path to Qwen3-VL-32B describer model')
-    parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI')
+    parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI (default: 200)')
     parser.add_argument('--config', default=None, help='Path to config JSON')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
-    parser.add_argument('--keep-assets', action='store_true', help='Keep intermediate files (classifications, etc.)')
+    parser.add_argument('--keep-assets', action='store_true', help='Keep intermediate files')
 
     return parser.parse_args()
 
@@ -653,12 +464,7 @@ def main():
     # Load config
     config = load_config(args.config)
 
-    # Get settings from args or config
-    classifier = args.classifier or config.get('classifier', 'heuristic')
-    precision = args.precision or config.get('precision', 'fp16')
-
     # Determine describe_diagrams setting
-    # Priority: CLI arg > config > default (False)
     if args.describe_diagrams is not None:
         describe_diagrams = args.describe_diagrams
     else:
@@ -668,12 +474,7 @@ def main():
     run_pipeline(
         pdf_path=args.input_pdf,
         output_path=args.output_md,
-        classifier=classifier,
-        classifier_precision=precision,
-        deepseek_model_path=args.deepseek_model,
-        qwen_model_path=args.qwen_model,
-        qwen_describer_path=args.qwen_describer,
-        describe_diagrams=describe_diagrams,
+        describe_diagrams_flag=describe_diagrams,
         dpi=args.dpi,
         verbose=args.verbose,
         keep_assets=args.keep_assets,

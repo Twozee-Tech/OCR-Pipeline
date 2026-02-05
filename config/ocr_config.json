@@ -1,8 +1,9 @@
 {
     "deepseek_model_path": "/workspace/models/DeepSeek-OCR-2-model",
-    "qwen_model_path": "/workspace/models/Qwen3-VL-8B-model",
-    "qwen_describer_path": "/workspace/models/Qwen3-VL-32B-Thinking",
-    "classifier": "qwen3-vl-8b",
-    "precision": "fp16",
+    "qwen_model_path": "/workspace/models/Qwen3-VL-30B-model",
+    "qwen_gpu_memory_utilization": 0.30,
+    "qwen_max_model_len": 6144,
+    "ocr_gpu_memory_utilization": 0.50,
+    "ocr_max_model_len": 8192,
     "describe_diagrams": false
 }

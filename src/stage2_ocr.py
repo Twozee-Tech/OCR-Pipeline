@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
 """
-Stage 2: OCR Processing with DeepSeek-OCR
+Stage 2: OCR Processing with DeepSeek-OCR via vLLM
 
 Processes PDF pages with content-aware prompts based on Stage 1 classifications.
 
-Standalone usage:
-    python stage2_ocr.py input.pdf --classifications classifications.json --output output.md
+Usage:
+    from stage2_ocr import create_ocr_llm, ocr_pages, pdf_to_page_images
 
-As module:
-    from stage2_ocr import load_model, ocr_pages
-    model, tokenizer = load_model(model_path)
-    results = ocr_pages(model, tokenizer, pages, classifications)
+    llm = create_ocr_llm(model_path, config)
+    processor = AutoProcessor.from_pretrained(model_path)
+    pages = pdf_to_page_images(pdf_path)
+    results = ocr_pages(llm, processor, image_paths, classifications)
 """
 
-import torch
-from transformers import AutoModel, AutoTokenizer
-import json
-import re
-import sys
 import os
+import re
+import json
 import time
-import argparse
 import tempfile
 import shutil
 from pathlib import Path
 from PIL import Image
 import io
+
+import torch
+from vllm import LLM, SamplingParams
+from transformers import AutoProcessor
 
 try:
     import fitz  # PyMuPDF
@@ -33,92 +33,73 @@ except ImportError:
     fitz = None
 
 
+# =============================================================================
+# Prompts & Parameters
+# =============================================================================
+
 # Prompt strategies for different content types
 PROMPTS = {
-    'text': "<image>\n<|grounding|>Convert the document to markdown.",
-    'document': "<image>\n<|grounding|>Convert the document to markdown.",
-    'figure': "<image>\nParse the figure.",
-    'diagram': "<image>\nDescribe this image in detail.",
-    'flowchart': "<image>\nDescribe this image in detail.",
-    'table': "<image>\n<|grounding|>Convert the document to markdown.",
-    'mixed': "<image>\n<|grounding|>Convert the document to markdown.",
+    'text': "Convert this document page to markdown. Preserve all text formatting, headers, lists, and structure.",
+    'document': "Convert this document page to markdown. Preserve all text formatting, headers, lists, and structure.",
+    'figure': "Describe this image in detail.",
+    'diagram': "Describe this diagram in detail, including all elements, connections, and flow.",
+    'flowchart': "Describe this flowchart in detail, including all steps, decisions, and flow direction.",
+    'table': "Convert this document to markdown. Pay special attention to table formatting with proper alignment.",
+    'mixed': "Convert this document page to markdown. Preserve all text, tables, and describe any images or diagrams.",
 }
 
+OCR_PARAMS = SamplingParams(temperature=0, max_tokens=4096, top_k=-1)
 
-# ============================================================================
-# Model Loading
-# ============================================================================
 
-def load_model(model_path: str, verbose: bool = False):
+# =============================================================================
+# Model Creation
+# =============================================================================
+
+def create_ocr_llm(model_path: str, config: dict = None) -> LLM:
     """
-    Load DeepSeek-OCR model and tokenizer.
+    Create vLLM instance for DeepSeek-OCR model.
 
     Args:
         model_path: Path to DeepSeek-OCR model
-        verbose: Print loading progress
+        config: Optional config dict with gpu_memory_utilization, max_model_len
 
     Returns:
-        tuple: (model, tokenizer)
+        LLM: vLLM model instance
     """
-    if verbose:
-        print(f"\nLoading DeepSeek-OCR model...")
-        print(f"  Path: {model_path}")
-        if torch.cuda.is_available():
-            print(f"  GPU: {torch.cuda.get_device_name(0)}")
+    config = config or {}
 
-    start = time.time()
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        model_path,
-        _attn_implementation='eager',
+    return LLM(
+        model=model_path,
         trust_remote_code=True,
-        use_safetensors=True,
-        torch_dtype=torch.bfloat16,
-        device_map='auto'
-    ).eval()
-
-    if verbose:
-        print(f"  Loaded in {time.time() - start:.1f}s")
-
-    return model, tokenizer
+        gpu_memory_utilization=config.get('ocr_gpu_memory_utilization', 0.50),
+        max_model_len=config.get('ocr_max_model_len', 8192),
+        tensor_parallel_size=torch.cuda.device_count(),
+    )
 
 
-def unload_model(model, tokenizer, verbose: bool = False):
-    """
-    Unload model and free VRAM.
-
-    Args:
-        model: DeepSeek-OCR model
-        tokenizer: DeepSeek-OCR tokenizer
-        verbose: Print progress
-    """
-    if model is not None:
-        del model
-    if tokenizer is not None:
-        del tokenizer
+def unload_llm(llm: LLM):
+    """Unload vLLM model and free VRAM."""
+    if llm is not None:
+        del llm
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    if verbose:
-        print("  Unloaded OCR model, freed VRAM")
 
-
-# ============================================================================
+# =============================================================================
 # Prompt Selection
-# ============================================================================
+# =============================================================================
 
 def get_prompt(classification: dict) -> str:
     """
-    Get optimal DeepSeek-OCR prompt based on classification.
+    Get optimal OCR prompt based on classification.
 
     Args:
         classification: Dict with 'type' and 'confidence'
 
     Returns:
-        str: Prompt for DeepSeek-OCR
+        str: Prompt for OCR
     """
     if classification is None:
         return PROMPTS['mixed']
@@ -133,217 +114,121 @@ def get_prompt(classification: dict) -> str:
     return PROMPTS.get(page_type, PROMPTS['mixed'])
 
 
-# ============================================================================
-# OCR Processing
-# ============================================================================
+# =============================================================================
+# Input Preparation
+# =============================================================================
 
-def ocr_page(model, tokenizer, image: Image.Image, classification: dict,
-             temp_dir: str, output_dir: str = None, verbose: bool = False) -> dict:
+def prepare_ocr_input(image_path: str, classification: dict, processor: AutoProcessor) -> dict:
     """
-    Run OCR on a single page.
+    Prepare OCR input for vLLM.
 
     Args:
-        model: DeepSeek-OCR model
-        tokenizer: DeepSeek-OCR tokenizer
-        image: PIL Image of the page
+        image_path: Path to page image
         classification: Classification from Stage 1
-        temp_dir: Temporary directory for processing
-        output_dir: Output directory for extracted figures
-        verbose: Print debug info
+        processor: AutoProcessor
 
     Returns:
-        dict: OCR result with 'text', 'figures', 'classification'
+        dict: Input for vLLM generate()
     """
-    page_num = classification.get('page', 0)
-    content_type = classification.get('type', 'mixed')
-
-    # Save image temporarily
-    temp_image = os.path.join(temp_dir, f"page_{page_num:03d}.png")
-    image.save(temp_image, quality=95)
-
-    # Select prompt
     prompt = get_prompt(classification)
 
-    if verbose:
-        print(f"    Prompt type: {content_type}")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": f"file://{os.path.abspath(image_path)}"},
+                {"type": "text", "text": prompt},
+            ],
+        }
+    ]
 
-    # Run OCR
-    result = model.infer(
-        tokenizer,
-        prompt=prompt,
-        image_file=temp_image,
-        output_path=temp_dir,
-        base_size=1024,
-        image_size=640,
-        crop_mode=True,
-        save_results=True,
-        test_compress=False
+    # Apply chat template
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
     )
 
-    # Extract text from result
-    ocr_text = ""
-
-    # Check direct result
-    if result and isinstance(result, str) and len(result.strip()) > 0:
-        ocr_text = result
-
-    # Check result.mmd file
-    if not ocr_text:
-        mmd_file = os.path.join(temp_dir, 'result.mmd')
-        if os.path.exists(mmd_file):
-            with open(mmd_file, 'r', encoding='utf-8') as f:
-                ocr_text = f.read()
-            os.remove(mmd_file)
-
-    # Check 'other' directories
-    if not ocr_text:
-        for root, dirs, files in os.walk(temp_dir):
-            if 'other' in dirs:
-                other_dir = os.path.join(root, 'other')
-                parts = []
-                for fname in sorted(os.listdir(other_dir)):
-                    fpath = os.path.join(other_dir, fname)
-                    if os.path.isfile(fpath):
-                        try:
-                            with open(fpath, 'r', encoding='utf-8') as f:
-                                content = f.read().strip()
-                                if content:
-                                    parts.append(content)
-                        except:
-                            pass
-                if parts:
-                    ocr_text = '\n\n'.join(parts)
-                shutil.rmtree(other_dir, ignore_errors=True)
-                break
-
-    # Check for .md/.txt files
-    if not ocr_text:
-        for root, dirs, files in os.walk(temp_dir):
-            for fname in files:
-                if fname.endswith(('.md', '.txt')):
-                    fpath = os.path.join(root, fname)
-                    try:
-                        with open(fpath, 'r', encoding='utf-8') as f:
-                            content = f.read().strip()
-                            if content and len(content) > 10:
-                                ocr_text = content
-                                os.remove(fpath)
-                                break
-                    except:
-                        pass
-            if ocr_text:
-                break
-
-    # Initialize results
-    results = {
-        'text': ocr_text,
-        'figures': [],
-        'classification': classification,
+    # For DeepSeek-OCR, we use a simpler approach
+    # The model expects image in multi_modal_data
+    return {
+        "prompt": text,
+        "multi_modal_data": {"image": f"file://{os.path.abspath(image_path)}"},
     }
 
-    # For visual content, get description
-    if content_type in ('diagram', 'figure', 'flowchart'):
-        vl_desc = classification.get('description', '')
-        if not vl_desc or classification.get('method') == 'heuristic':
-            desc_result = model.infer(
-                tokenizer,
-                prompt="<image>\nDescribe this image in detail.",
-                image_file=temp_image,
-                output_path=temp_dir,
-                base_size=1024,
-                image_size=640,
-                crop_mode=True,
-                save_results=False,
-                test_compress=False
-            )
-            if desc_result:
-                results['ocr_description'] = desc_result
 
-    # Extract figures
-    if output_dir:
-        figures_dir = os.path.join(temp_dir, 'images')
-        if os.path.exists(figures_dir):
-            for fig_file in os.listdir(figures_dir):
-                if fig_file.endswith(('.jpg', '.png')):
-                    src = os.path.join(figures_dir, fig_file)
-                    dst_name = f"page{page_num:03d}_{fig_file}"
-                    dst_dir = os.path.join(output_dir, 'figures')
-                    os.makedirs(dst_dir, exist_ok=True)
-                    dst = os.path.join(dst_dir, dst_name)
-                    shutil.copy2(src, dst)
-                    results['figures'].append(dst_name)
-            shutil.rmtree(figures_dir, ignore_errors=True)
+# =============================================================================
+# OCR Processing
+# =============================================================================
 
-    return results
-
-
-def ocr_pages(model, tokenizer, pages: list, classifications: list,
-              output_dir: str = None, verbose: bool = False,
+def ocr_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
+              classifications: list, verbose: bool = False,
               progress_callback=None) -> list:
     """
-    Run OCR on all pages.
+    Run OCR on all pages using vLLM batching.
 
     Args:
-        model: DeepSeek-OCR model
-        tokenizer: DeepSeek-OCR tokenizer
-        pages: List of page info dicts with 'image'
+        llm: vLLM model instance
+        processor: AutoProcessor
+        image_paths: List of paths to page images
         classifications: List of classifications from Stage 1
-        output_dir: Output directory for figures
         verbose: Print progress
-        progress_callback: Optional callback(page_num, total) for progress updates
+        progress_callback: Optional callback(page_num, total)
 
     Returns:
         list: OCR results for each page
     """
+    if not image_paths:
+        return []
+
+    # Ensure classifications match pages
+    while len(classifications) < len(image_paths):
+        classifications.append({
+            'page': len(classifications) + 1,
+            'type': 'mixed',
+            'confidence': 0.5,
+            'method': 'default'
+        })
+
+    if verbose:
+        print(f"OCR processing {len(image_paths)} pages...")
+
+    # Prepare all inputs
+    inputs = [
+        prepare_ocr_input(path, cls, processor)
+        for path, cls in zip(image_paths, classifications)
+    ]
+
+    # Batch generate
+    start = time.time()
+    outputs = llm.generate(inputs, OCR_PARAMS)
+
+    if verbose:
+        elapsed = time.time() - start
+        print(f"  Batch completed in {elapsed:.1f}s ({elapsed/len(image_paths):.1f}s/page)")
+
+    # Process results
     results = []
-    temp_dir = tempfile.mkdtemp(prefix="deepseek_ocr_")
+    for i, (output, classification) in enumerate(zip(outputs, classifications)):
+        text = output.outputs[0].text
+        cleaned = clean_result(text, i + 1, [], classification)
 
-    try:
-        for i, (page_info, classification) in enumerate(zip(pages, classifications)):
-            page_start = time.time()
-            content_type = classification.get('type', 'mixed')
-            confidence = classification.get('confidence', 0)
+        results.append({
+            'text': cleaned,
+            'figures': [],
+            'classification': classification,
+        })
 
-            # Report progress
-            if progress_callback:
-                progress_callback(i + 1, len(pages))
+        if progress_callback:
+            progress_callback(i + 1, len(image_paths))
 
-            if verbose:
-                print(f"\n--- Page {i+1}/{len(pages)} [{content_type} @ {confidence:.0%}] ---")
-
-            ocr_result = ocr_page(
-                model, tokenizer,
-                page_info['image'],
-                classification,
-                temp_dir,
-                output_dir,
-                verbose
-            )
-
-            # Clean result
-            cleaned_text = clean_result(
-                ocr_result['text'],
-                i + 1,
-                ocr_result.get('figures', []),
-                classification
-            )
-
-            ocr_result['text'] = cleaned_text
-            results.append(ocr_result)
-
-            if verbose:
-                elapsed = time.time() - page_start
-                print(f"  {len(cleaned_text)} chars | {len(ocr_result.get('figures', []))} figures | {elapsed:.1f}s")
-
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        if verbose:
+            print(f"  Page {i+1}: {len(cleaned)} chars [{classification.get('type', 'mixed')}]")
 
     return results
 
 
-# ============================================================================
+# =============================================================================
 # Result Cleaning
-# ============================================================================
+# =============================================================================
 
 def clean_result(text: str, page_num: int, figures: list, classification: dict = None) -> str:
     """
@@ -361,8 +246,10 @@ def clean_result(text: str, page_num: int, figures: list, classification: dict =
     if not text:
         return ""
 
-    # Remove end token
+    # Remove common end tokens
     text = text.replace('<｜end▁of▁sentence｜>', '')
+    text = text.replace('<|im_end|>', '')
+    text = text.replace('<|endoftext|>', '')
 
     # Track figure index
     fig_idx = [0]
@@ -412,9 +299,9 @@ def fix_table_formatting(text: str) -> str:
     return '\n'.join(result)
 
 
-# ============================================================================
+# =============================================================================
 # PDF Processing Utilities
-# ============================================================================
+# =============================================================================
 
 def pdf_to_page_images(pdf_path: str, dpi: int = 200, verbose: bool = False) -> list:
     """
@@ -426,7 +313,7 @@ def pdf_to_page_images(pdf_path: str, dpi: int = 200, verbose: bool = False) -> 
         verbose: Print progress
 
     Returns:
-        list: Page info dicts with 'image'
+        list: Page info dicts with 'image' (PIL Image)
     """
     if fitz is None:
         raise ImportError("PyMuPDF (fitz) is required: pip install pymupdf")
@@ -444,7 +331,7 @@ def pdf_to_page_images(pdf_path: str, dpi: int = 200, verbose: bool = False) -> 
 
         pages.append({
             'image': img,
-            'page_num': i,
+            'page_num': i + 1,
             'size': img.size,
         })
 
@@ -455,11 +342,36 @@ def pdf_to_page_images(pdf_path: str, dpi: int = 200, verbose: bool = False) -> 
     return pages
 
 
-# ============================================================================
-# Output Generation
-# ============================================================================
+def save_pages_to_temp(pages: list, temp_dir: str = None) -> list:
+    """
+    Save PIL images to temp files for vLLM processing.
 
-def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'unknown',
+    Args:
+        pages: List of dicts with 'image' (PIL Image)
+        temp_dir: Optional temp directory
+
+    Returns:
+        list: Paths to saved image files
+    """
+    if temp_dir is None:
+        temp_dir = tempfile.mkdtemp(prefix="ocr_pages_")
+
+    Path(temp_dir).mkdir(parents=True, exist_ok=True)
+
+    paths = []
+    for i, page in enumerate(pages):
+        path = os.path.join(temp_dir, f"page_{i+1:04d}.png")
+        page['image'].save(path, "PNG")
+        paths.append(path)
+
+    return paths
+
+
+# =============================================================================
+# Output Generation
+# =============================================================================
+
+def generate_markdown(results: list, pdf_name: str, method: str = 'vllm',
                       diagram_descriptions: dict = None) -> str:
     """
     Generate final markdown from OCR results.
@@ -467,8 +379,8 @@ def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'un
     Args:
         results: List of OCR results from ocr_pages()
         pdf_name: Name of source PDF
-        classifier_method: Method used for classification
-        diagram_descriptions: Dict of {page_num: description} from Stage 1.5
+        method: Processing method description
+        diagram_descriptions: Dict of {page_num: description} from Qwen
 
     Returns:
         str: Complete markdown document
@@ -483,51 +395,36 @@ def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'un
         page_num = classification.get('page', 0)
         content_type = classification.get('type', 'unknown')
         confidence = classification.get('confidence', 0)
-        method = classification.get('method', 'unknown')
         ocr_text = r.get('text', '')
 
-        # Check if we have a Qwen3-VL-32B description for this page
+        # Check if we have a Qwen description for this page
         diagram_desc = diagram_descriptions.get(page_num)
         has_diagrams = classification.get('has_diagrams', False)
         is_diagram_page = content_type.lower() in diagram_types or (content_type.lower() == 'mixed' and has_diagrams)
 
         if diagram_desc and is_diagram_page:
-            # Use Qwen3-VL-32B description for diagram pages
+            # Use Qwen description for diagram pages
             text = diagram_desc
-            method = 'qwen3-vl-32b'
+            page_method = 'qwen3-vl-30b'
             diagrams_used += 1
 
-            # Optionally append DeepSeek text if it found additional content
+            # Append DeepSeek text if it found additional content
             if ocr_text and len(ocr_text.strip()) > 50:
                 text += f"\n\n---\n*Additional OCR text:*\n\n{ocr_text}"
-
         else:
-            # Use DeepSeek OCR for non-diagram pages or when no description available
             text = ocr_text
-
-            # Add VL description for visual content (from classifier)
-            vl_desc = classification.get('description', '')
-            if content_type in ('diagram', 'figure', 'flowchart') and vl_desc:
-                text += f"\n\n> **Page Analysis:** {vl_desc}\n"
-
-            # Add OCR description if available
-            if 'ocr_description' in r:
-                text += f"\n\n> **OCR Description:** {r['ocr_description']}\n"
+            page_method = method
 
         if text:
-            # Metadata comment
-            meta = f"<!-- Page {page_num} | Type: {content_type} | Confidence: {confidence:.0%} | Method: {method} -->"
+            meta = f"<!-- Page {page_num} | Type: {content_type} | Confidence: {confidence:.0%} | Method: {page_method} -->"
             combined.append(f"{meta}\n\n{text}")
 
-    # Determine converter info
-    if diagrams_used > 0:
-        converter_info = f"Qwen3-VL-8B + Qwen3-VL-32B ({diagrams_used} diagrams) + DeepSeek-OCR"
-    elif classifier_method == 'qwen3-vl-8b':
-        converter_info = "Qwen3-VL-8B + DeepSeek-OCR"
-    else:
-        converter_info = "DeepSeek-OCR (heuristic classification)"
-
     # Build document
+    if diagrams_used > 0:
+        converter_info = f"Qwen3-VL-30B ({diagrams_used} diagrams) + DeepSeek-OCR (vLLM)"
+    else:
+        converter_info = f"Qwen3-VL-30B + DeepSeek-OCR (vLLM)"
+
     total_figures = sum(len(r.get('figures', [])) for r in results)
 
     parts = [
@@ -539,180 +436,3 @@ def generate_markdown(results: list, pdf_name: str, classifier_method: str = 'un
     ]
 
     return "\n".join(parts)
-
-
-# ============================================================================
-# CLI
-# ============================================================================
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Stage 2: OCR with DeepSeek-OCR",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # OCR with classifications from Stage 1
-  python stage2_ocr.py document.pdf --classifications class.json -o output.md
-
-  # Without classifications (uses mixed prompt for all pages)
-  python stage2_ocr.py document.pdf -o output.md
-
-  # Verbose output
-  python stage2_ocr.py document.pdf --classifications class.json -o output.md -v
-"""
-    )
-
-    parser.add_argument('input_pdf', help='Input PDF file')
-    parser.add_argument('-o', '--output', required=True, help='Output markdown file')
-    parser.add_argument('-c', '--classifications', help='Classifications JSON from Stage 1')
-    parser.add_argument('-d', '--diagrams', help='Diagram descriptions JSON from Stage 1.5')
-    parser.add_argument('-m', '--model', help='Path to DeepSeek-OCR model')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI (default: 200)')
-
-    return parser.parse_args()
-
-
-def load_config() -> dict:
-    """Load config from ocr_config.json."""
-    config_paths = [
-        Path("ocr_config.json"),
-        Path(__file__).parent / "ocr_config.json",
-        Path("/workspace/data/ocr_config.json"),
-    ]
-    for path in config_paths:
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-    return {}
-
-
-def find_model_path(custom_path: str = None, config: dict = None) -> str:
-    """Find DeepSeek-OCR model path."""
-    if custom_path and os.path.exists(custom_path):
-        return custom_path
-
-    # Check config
-    if config and config.get('deepseek_model_path'):
-        if os.path.exists(config['deepseek_model_path']):
-            return config['deepseek_model_path']
-
-    # Common paths
-    candidates = [
-        './DeepSeek-OCR-2-model',
-        './DeepSeek-OCR-model',
-        '../DeepSeek-OCR-model',
-        '/workspace/DeepSeek-OCR-model',
-        '/workspace/models/DeepSeek-OCR-2-model',
-        '/workspace/models/DeepSeek-OCR-model',
-        os.path.expanduser('~/DeepSeek-OCR-model'),
-    ]
-
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-
-    return None
-
-
-def main():
-    args = parse_args()
-
-    pdf_path = Path(args.input_pdf)
-    if not pdf_path.exists():
-        print(f"ERROR: PDF not found: {pdf_path}")
-        sys.exit(1)
-
-    # Load config
-    config = load_config()
-
-    # Find model
-    model_path = find_model_path(args.model, config)
-    if model_path is None:
-        print("ERROR: DeepSeek-OCR model not found.")
-        print("Download with: hf download deepseek-ai/DeepSeek-OCR-2 --local-dir /workspace/models/DeepSeek-OCR-2-model")
-        sys.exit(1)
-
-    print("=" * 60)
-    print("Stage 2: OCR Processing")
-    print("=" * 60)
-    print(f"Input:  {pdf_path}")
-    print(f"Output: {args.output}")
-    print(f"Model:  {model_path}")
-    print()
-
-    start_time = time.time()
-
-    # Load classifications (if provided)
-    classifications = None
-    classifier_method = 'none'
-    if args.classifications:
-        if os.path.exists(args.classifications):
-            with open(args.classifications, 'r') as f:
-                data = json.load(f)
-                classifications = data.get('classifications', [])
-                classifier_method = data.get('method', 'unknown')
-            print(f"Loaded {len(classifications)} classifications from {args.classifications}")
-        else:
-            print(f"WARNING: Classifications file not found: {args.classifications}")
-
-    # Convert PDF to images
-    pages = pdf_to_page_images(str(pdf_path), dpi=args.dpi, verbose=args.verbose)
-
-    # Create default classifications if not provided
-    if classifications is None or len(classifications) != len(pages):
-        if classifications is not None:
-            print(f"WARNING: Classification count mismatch ({len(classifications)} vs {len(pages)} pages)")
-        print("Using default 'mixed' classification for all pages")
-        classifications = [
-            {'page': i + 1, 'type': 'mixed', 'confidence': 0.5, 'method': 'default'}
-            for i in range(len(pages))
-        ]
-        classifier_method = 'default'
-
-    # Load model
-    model, tokenizer = load_model(model_path, verbose=args.verbose)
-
-    # Setup output directory
-    output_path = Path(args.output)
-    output_dir = output_path.parent / f"{output_path.stem}_assets"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Run OCR
-    print(f"\nProcessing {len(pages)} pages...")
-    results = ocr_pages(model, tokenizer, pages, classifications, str(output_dir), args.verbose)
-
-    # Unload model
-    unload_model(model, tokenizer, verbose=args.verbose)
-
-    # Load diagram descriptions if provided
-    diagram_descriptions = {}
-    if args.diagrams and os.path.exists(args.diagrams):
-        with open(args.diagrams, 'r') as f:
-            desc_data = json.load(f)
-        raw_descriptions = desc_data.get('descriptions', {})
-        diagram_descriptions = {int(k): v for k, v in raw_descriptions.items()}
-        print(f"Loaded {len(diagram_descriptions)} diagram descriptions from {args.diagrams}")
-
-    # Generate output
-    markdown = generate_markdown(results, pdf_path.stem, classifier_method, diagram_descriptions)
-
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(markdown)
-
-    # Summary
-    elapsed = time.time() - start_time
-    total_figures = sum(len(r.get('figures', [])) for r in results)
-    total_chars = sum(len(r.get('text', '')) for r in results)
-
-    print(f"\n" + "=" * 60)
-    print(f"Completed in {elapsed:.1f}s ({elapsed/len(pages):.1f}s per page)")
-    print(f"Total characters: {total_chars}")
-    print(f"Figures extracted: {total_figures}")
-    print(f"Output: {output_path}")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    main()
