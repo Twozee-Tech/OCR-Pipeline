@@ -65,10 +65,10 @@ fi
 echo "2. Applying patch..."
 
 # Create patched version
-python3 << 'PATCHSCRIPT'
+python3 << PATCHSCRIPT
 import sys
 
-file_path = sys.argv[1] if len(sys.argv) > 1 else "/workspace/models/DeepSeek-OCR-2-model/modeling_deepseekv2.py"
+file_path = "$FILE"
 
 with open(file_path, 'r') as f:
     content = f.read()
