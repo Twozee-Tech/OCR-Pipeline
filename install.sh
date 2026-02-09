@@ -151,7 +151,7 @@ if [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] || [[ "$DL_QWEN30B" =~ ^[Yy] ]]; then
 
     DL_CMDS=""
     [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> DeepSeek-OCR-2...' && hf download deepseek-ai/DeepSeek-OCR-2 --local-dir /models/DeepSeek-OCR-2-model && "
-    [[ "$DL_QWEN30B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-30B...' && hf download Qwen/Qwen3-VL-30B-A3B-Instruct --local-dir /models/Qwen3-VL-30B-model && "
+    [[ "$DL_QWEN30B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-30B-FP8...' && hf download Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --local-dir /models/Qwen3-VL-30B-FP8-model && "
     DL_CMDS+="echo '>>> Done!'"
 
     HAD_PYTHON_IMAGE=$(docker images -q python:3.11-slim 2>/dev/null)
