@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir \
 RUN python3 -m venv /opt/venv_ocr && \
     /opt/venv_ocr/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/venv_ocr/bin/pip install --no-cache-dir \
-    torch==2.10.0 --index-url https://download.pytorch.org/whl/cu130 && \
+    torch==2.10.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu130 && \
     /opt/venv_ocr/bin/pip install --no-cache-dir \
     transformers==4.47.1 \
     accelerate \
