@@ -150,8 +150,8 @@ if [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] || [[ "$DL_QWEN30B" =~ ^[Yy] ]]; then
     echo -e "  ${BLUE}Downloading models...${NC}"
 
     DL_CMDS=""
-    [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> DeepSeek-OCR-2...' && huggingface-cli download deepseek-ai/DeepSeek-OCR-2 --local-dir /models/DeepSeek-OCR-2-model && "
-    [[ "$DL_QWEN30B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-30B...' && huggingface-cli download Qwen/Qwen3-VL-30B-A3B-Instruct --local-dir /models/Qwen3-VL-30B-model && "
+    [[ "$DL_DEEPSEEK" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> DeepSeek-OCR-2...' && hf download deepseek-ai/DeepSeek-OCR-2 --local-dir /models/DeepSeek-OCR-2-model && "
+    [[ "$DL_QWEN30B" =~ ^[Yy] ]] && DL_CMDS+="echo '>>> Qwen3-VL-30B...' && hf download Qwen/Qwen3-VL-30B-A3B-Instruct --local-dir /models/Qwen3-VL-30B-model && "
     DL_CMDS+="echo '>>> Done!'"
 
     HAD_PYTHON_IMAGE=$(docker images -q python:3.11-slim 2>/dev/null)
