@@ -3,7 +3,7 @@
 Stage 2: OCR Processing with DeepSeek-OCR via venv subprocess
 
 Processes PDF pages with content-aware prompts based on Stage 1 classifications.
-Uses subprocess to run DeepSeek-OCR-2 in a separate venv with transformers 4.47.1.
+Uses subprocess to run DeepSeek-OCR-2 in a separate venv with transformers 4.46.3.
 
 Usage:
     from stage2_ocr import ocr_pages, pdf_to_page_images

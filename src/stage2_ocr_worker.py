@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DeepSeek-OCR Worker - Runs in venv with transformers 4.47.1
+DeepSeek-OCR Worker - Runs in venv with transformers 4.46.3
 
 This worker script is called via subprocess from stage2_ocr.py.
 It loads the DeepSeek-OCR-2 model using transformers (not vLLM) and
