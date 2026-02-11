@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCR Pipeline</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 2rem; max-width: 900px; margin: 0 auto; }
+  h1 { margin-bottom: 1.5rem; font-size: 1.5rem; }
+  .card { background: #fff; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .card h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+  .form-row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .form-row label { font-size: 0.9rem; }
+  input[type="file"] { flex: 1; min-width: 200px; }
+  input[type="number"] { width: 80px; padding: 0.3rem 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
+  button { padding: 0.5rem 1.2rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  .btn-sm { padding: 0.25rem 0.6rem; font-size: 0.8rem; }
+  .btn-dl { background: #16a34a; color: #fff; }
+  .btn-dl:hover { background: #15803d; }
+  .btn-del { background: #dc2626; color: #fff; }
+  .btn-del:hover { background: #b91c1c; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid #eee; }
+  th { font-weight: 600; color: #666; font-size: 0.8rem; text-transform: uppercase; }
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+  .badge-queued { background: #fef3c7; color: #92400e; }
+  .badge-processing { background: #dbeafe; color: #1e40af; }
+  .badge-done { background: #d1fae5; color: #065f46; }
+  .badge-error { background: #fee2e2; color: #991b1b; }
+  .badge-cancelled { background: #e5e7eb; color: #374151; }
+  .empty { text-align: center; color: #999; padding: 2rem; }
+  .error-msg { color: #dc2626; font-size: 0.8rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .time { color: #666; font-size: 0.8rem; }
+  .upload-status { margin-top: 0.5rem; font-size: 0.9rem; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #ddd; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.3rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<h1>OCR Pipeline</h1>
+
+<div class="card">
+  <h2>Upload PDF</h2>
+  <form id="uploadForm">
+    <div class="form-row">
+      <input type="file" id="fileInput" accept=".pdf" required>
+      <label><input type="checkbox" id="diagrams"> Describe diagrams</label>
+      <label>DPI <input type="number" id="dpi" value="200" min="72" max="600"></label>
+      <button type="submit" class="btn-primary" id="uploadBtn">Upload</button>
+    </div>
+  </form>
+  <div id="uploadStatus" class="upload-status"></div>
+</div>
+
+<div class="card">
+  <h2>Jobs</h2>
+  <div id="jobsContainer">
+    <div class="empty">No jobs yet</div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let pollTimer = null;
+let fastPoll = false;
+
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fileInput = document.getElementById('fileInput');
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  const btn = document.getElementById('uploadBtn');
+  const statusEl = document.getElementById('uploadStatus');
+  btn.disabled = true;
+  statusEl.innerHTML = '<span class="spinner"></span> Uploading...';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('describe_diagrams', document.getElementById('diagrams').checked);
+  fd.append('dpi', document.getElementById('dpi').value);
+
+  try {
+    const res = await fetch(API + '/upload', { method: 'POST', body: fd, credentials: 'same-origin' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Upload failed');
+    }
+    const data = await res.json();
+    statusEl.textContent = 'Queued: ' + data.job_id;
+    fileInput.value = '';
+    fastPoll = true;
+    refreshJobs();
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function formatTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleTimeString();
+}
+
+function duration(start, end) {
+  if (!start) return '';
+  const s = new Date(start);
+  const e = end ? new Date(end) : new Date();
+  const sec = Math.round((e - s) / 1000);
+  if (sec < 60) return sec + 's';
+  return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+}
+
+function badgeClass(status) {
+  return 'badge badge-' + status;
+}
+
+function renderJobs(jobs) {
+  const c = document.getElementById('jobsContainer');
+  if (!jobs.length) {
+    c.innerHTML = '<div class="empty">No jobs yet</div>';
+    return;
+  }
+
+  let hasActive = jobs.some(j => j.status === 'queued' || j.status === 'processing');
+  fastPoll = hasActive;
+
+  let html = '<table><thead><tr><th>File</th><th>Status</th><th>Time</th><th>Actions</th></tr></thead><tbody>';
+  for (const j of jobs) {
+    let actions = '';
+    if (j.status === 'done') {
+      actions = `<button class="btn-sm btn-dl" onclick="downloadJob('${j.id}')">Download</button> `;
+    }
+    if (j.status !== 'processing') {
+      actions += `<button class="btn-sm btn-del" onclick="deleteJob('${j.id}')">Delete</button>`;
+    }
+
+    let extra = '';
+    if (j.status === 'error' && j.error_message) {
+      extra = `<div class="error-msg" title="${j.error_message.replace(/"/g, '&quot;')}">${j.error_message}</div>`;
+    }
+    if (j.status === 'processing') {
+      extra = `<div class="time"><span class="spinner"></span>${duration(j.started_at)}</div>`;
+    }
+
+    html += `<tr>
+      <td>${j.filename}</td>
+      <td><span class="${badgeClass(j.status)}">${j.status}</span>${extra}</td>
+      <td class="time">${j.status === 'processing' ? formatTime(j.started_at) : formatTime(j.completed_at || j.created_at)}${j.completed_at && j.started_at ? ' (' + duration(j.started_at, j.completed_at) + ')' : ''}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  c.innerHTML = html;
+}
+
+async function refreshJobs() {
+  try {
+    const res = await fetch(API + '/jobs', { credentials: 'same-origin' });
+    if (res.ok) {
+      const data = await res.json();
+      renderJobs(data);
+    }
+  } catch (e) { /* ignore */ }
+  schedulePoll();
+}
+
+function schedulePoll() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(refreshJobs, fastPoll ? 3000 : 10000);
+}
+
+async function downloadJob(id) {
+  window.open(API + '/jobs/' + id + '/download', '_blank');
+}
+
+async function deleteJob(id) {
+  if (!confirm('Delete this job and its files?')) return;
+  try {
+    await fetch(API + '/jobs/' + id, { method: 'DELETE', credentials: 'same-origin' });
+    refreshJobs();
+  } catch (e) { /* ignore */ }
+}
+
+refreshJobs();
+</script>
+</body>
+</html>

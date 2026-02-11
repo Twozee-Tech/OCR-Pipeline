@@ -200,7 +200,10 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     fastsafetensors \
     "qwen-vl-utils>=0.0.14" \
     PyMuPDF \
-    Pillow
+    Pillow \
+    fastapi \
+    "uvicorn[standard]" \
+    python-multipart
 
 # ---------------------------------------------------------
 # venv_ocr: DeepSeek-OCR-2 (Stage 2 inference)
@@ -234,10 +237,11 @@ RUN /opt/venv_ocr/bin/pip install --no-cache-dir --no-deps transformers==4.46.3 
 # Application code
 # ---------------------------------------------------------
 COPY src/*.py /app/
+COPY src/templates/ /app/templates/
 COPY config/ocr_config.json /app/
 WORKDIR /app
 
-RUN mkdir -p /data/input /data/output
+RUN mkdir -p /data/input /data/output /data/uploads
 
 # ---------------------------------------------------------
 # Environment
@@ -253,5 +257,11 @@ ENV OMP_NUM_THREADS=1
 ENV OCR_DESCRIBE_DIAGRAMS=false
 ENV OCR_DPI=200
 ENV OCR_VENV_PYTHON=/opt/venv_ocr/bin/python3
+
+ENV OCR_WEB_MODE=false
+ENV OCR_WEB_PORT=14000
+ENV OCR_WEB_USER=admin
+ENV OCR_WEB_PASS=changeme
+EXPOSE 14000
 
 ENTRYPOINT ["/opt/venv_vllm/bin/python3", "/app/entrypoint.py"]

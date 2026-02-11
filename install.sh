@@ -45,7 +45,7 @@ echo -e "${NC}"
 # ============================================
 # Step 1: Check Prerequisites
 # ============================================
-echo -e "${YELLOW}[1/5] Checking prerequisites...${NC}"
+echo -e "${YELLOW}[1/6] Checking prerequisites...${NC}"
 
 if ! command -v docker &> /dev/null; then
     echo -e "  ${RED}ERROR: Docker not installed${NC}"
@@ -70,7 +70,7 @@ fi
 # Step 2: Configure Model Directory
 # ============================================
 echo ""
-echo -e "${YELLOW}[2/5] Configure model storage${NC}"
+echo -e "${YELLOW}[2/6] Configure model storage${NC}"
 echo ""
 echo "  Where should models be stored?"
 echo ""
@@ -89,7 +89,7 @@ echo -e "  ${GREEN}✓${NC} Using: $MODELS_DIR"
 # Step 3: Download Models
 # ============================================
 echo ""
-echo -e "${YELLOW}[3/5] Select models to download${NC}"
+echo -e "${YELLOW}[3/6] Select models to download${NC}"
 echo ""
 echo "  Available models:"
 echo "    1) DeepSeek-OCR-2      (~8GB)  - Required for text extraction"
@@ -174,16 +174,18 @@ fi
 # Step 4: Build Docker Image
 # ============================================
 echo ""
-echo -e "${YELLOW}[4/5] Building Docker image...${NC}"
+echo -e "${YELLOW}[4/6] Building Docker image...${NC}"
 
 # Download files needed for Docker build
-mkdir -p "$TEMP_DIR/src" "$TEMP_DIR/config"
+mkdir -p "$TEMP_DIR/src/templates" "$TEMP_DIR/config"
 curl -fsSL "$REPO_RAW/docker/Dockerfile" -o "$TEMP_DIR/Dockerfile"
 curl -fsSL "$REPO_RAW/src/entrypoint.py" -o "$TEMP_DIR/src/entrypoint.py"
 curl -fsSL "$REPO_RAW/src/ocr_pipeline.py" -o "$TEMP_DIR/src/ocr_pipeline.py"
 curl -fsSL "$REPO_RAW/src/qwen_processor.py" -o "$TEMP_DIR/src/qwen_processor.py"
 curl -fsSL "$REPO_RAW/src/stage2_ocr.py" -o "$TEMP_DIR/src/stage2_ocr.py"
 curl -fsSL "$REPO_RAW/src/stage2_ocr_worker.py" -o "$TEMP_DIR/src/stage2_ocr_worker.py"
+curl -fsSL "$REPO_RAW/src/web_app.py" -o "$TEMP_DIR/src/web_app.py"
+curl -fsSL "$REPO_RAW/src/templates/index.html" -o "$TEMP_DIR/src/templates/index.html"
 
 # Generate config with actual model paths (relative to /workspace/models inside container)
 DEEPSEEK_NAME=$(basename "$DEEPSEEK_PATH")
@@ -208,7 +210,7 @@ echo -e "  ${GREEN}✓${NC} Docker image built"
 # Step 5: Install 'ocr' Command
 # ============================================
 echo ""
-echo -e "${YELLOW}[5/5] Installing 'ocr' command...${NC}"
+echo -e "${YELLOW}[5/6] Installing 'ocr' command...${NC}"
 
 # Determine install location
 BIN_DIR="$HOME/.local/bin"
@@ -311,6 +313,78 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 fi
 
 # ============================================
+# Step 6: Install 'ocr-web' Command
+# ============================================
+echo ""
+echo -e "${YELLOW}[6/6] Installing 'ocr-web' command...${NC}"
+
+DATA_DIR="$HOME/.local/share/ocr-data"
+mkdir -p "$DATA_DIR"
+
+cat > "$BIN_DIR/ocr-web" << WEBWRAPPER
+#!/bin/bash
+# OCR Pipeline v3.0 - Web UI
+# Models: $MODELS_DIR
+
+MODELS_DIR="$MODELS_DIR"
+DATA_DIR="$DATA_DIR"
+IMAGE_NAME="ocr-pipeline"
+CONTAINER_NAME="ocr-web"
+
+case "\${1:-help}" in
+  start)
+    if docker ps -q -f name="\$CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        echo "ocr-web is already running. Use 'ocr-web stop' first."
+        exit 1
+    fi
+    docker rm "\$CONTAINER_NAME" 2>/dev/null || true
+    docker run --gpus all -d --name "\$CONTAINER_NAME" \\
+      -p "\${OCR_WEB_PORT:-14000}:\${OCR_WEB_PORT:-14000}" \\
+      -e OCR_WEB_MODE=true \\
+      -e OCR_WEB_PORT="\${OCR_WEB_PORT:-14000}" \\
+      -e OCR_WEB_USER="\${OCR_WEB_USER:-admin}" \\
+      -e OCR_WEB_PASS="\${OCR_WEB_PASS:-changeme}" \\
+      -v "\$MODELS_DIR:/workspace/models:ro" \\
+      -v "\$DATA_DIR:/data" \\
+      "\$IMAGE_NAME"
+    echo "OCR Web UI started on http://localhost:\${OCR_WEB_PORT:-14000}"
+    echo "  Username: \${OCR_WEB_USER:-admin}"
+    echo "  Stop with: ocr-web stop"
+    ;;
+  stop)
+    docker stop "\$CONTAINER_NAME" 2>/dev/null && docker rm "\$CONTAINER_NAME" 2>/dev/null
+    echo "OCR Web UI stopped."
+    ;;
+  status)
+    docker ps -f name="\$CONTAINER_NAME"
+    ;;
+  logs)
+    docker logs -f "\$CONTAINER_NAME"
+    ;;
+  *)
+    echo "Usage: ocr-web <command>"
+    echo ""
+    echo "Commands:"
+    echo "  start   Start the web UI (default port 14000)"
+    echo "  stop    Stop the web UI"
+    echo "  status  Show container status"
+    echo "  logs    Follow container logs"
+    echo ""
+    echo "Environment variables (set before 'start'):"
+    echo "  OCR_WEB_USER  Username for basic auth (default: admin)"
+    echo "  OCR_WEB_PASS  Password for basic auth (default: changeme)"
+    echo "  OCR_WEB_PORT  Port to listen on (default: 14000)"
+    echo ""
+    echo "Example:"
+    echo "  OCR_WEB_USER=myuser OCR_WEB_PASS=secret ocr-web start"
+    ;;
+esac
+WEBWRAPPER
+
+chmod +x "$BIN_DIR/ocr-web"
+echo -e "  ${GREEN}✓${NC} Installed to $BIN_DIR/ocr-web"
+
+# ============================================
 # Done
 # ============================================
 echo ""
@@ -319,8 +393,11 @@ echo "            Installation Complete!            "
 echo "==============================================${NC}"
 echo ""
 echo "Usage:"
-echo "  ocr document.pdf"
-echo "  ocr document.pdf --diagrams"
+echo "  ocr document.pdf                  # CLI mode"
+echo "  ocr document.pdf --diagrams       # CLI with diagrams"
+echo ""
+echo "  ocr-web start                     # Start web UI on :14000"
+echo "  ocr-web stop                      # Stop web UI"
 echo ""
 echo "Models: $MODELS_DIR"
 echo ""

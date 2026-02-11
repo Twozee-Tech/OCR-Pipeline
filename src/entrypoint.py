@@ -7,6 +7,17 @@ from pathlib import Path
 
 
 def main():
+    # Web mode: launch FastAPI server instead of CLI pipeline
+    if os.environ.get('OCR_WEB_MODE', 'false').lower() == 'true':
+        import uvicorn
+        uvicorn.run(
+            "web_app:app",
+            host=os.environ.get('OCR_WEB_HOST', '0.0.0.0'),
+            port=int(os.environ.get('OCR_WEB_PORT', '14000')),
+            log_level="info",
+        )
+        return
+
     # Find input PDF
     input_pdf = os.environ.get('OCR_INPUT_PDF')
     if not input_pdf:
