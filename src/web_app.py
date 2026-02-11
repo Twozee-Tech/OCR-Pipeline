@@ -3,8 +3,9 @@ import asyncio
 import os
 import secrets
 import shutil
+import subprocess
+import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -32,7 +33,6 @@ app = FastAPI(title="OCR Pipeline Web UI")
 security = HTTPBasic()
 job_queue: asyncio.Queue = asyncio.Queue()
 jobs: dict = {}  # job_id -> Job dict
-executor = ThreadPoolExecutor(max_workers=1)
 
 
 def _now() -> str:
@@ -55,28 +55,23 @@ def _verify(creds: HTTPBasicCredentials = Depends(security)) -> str:
 # ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
-def _run_ocr_job(job_id: str) -> str:
-    """Run the OCR pipeline (blocking) — called via run_in_executor."""
-    job = jobs[job_id]
-    pdf_path = job["pdf_path"]
-    output_path = job["output_path"]
+def _run_ocr_subprocess(job: dict) -> str:
+    """Run the OCR pipeline as a subprocess so GPU memory is fully freed on exit."""
+    cmd = [
+        sys.executable, "/app/ocr_pipeline.py",
+        job["pdf_path"], job["output_path"],
+        "--dpi", str(job["dpi"]),
+        "--verbose",
+    ]
+    if job["describe_diagrams"]:
+        cmd.append("--describe-diagrams")
 
-    # Lazy import — heavy deps only when first job runs
-    from ocr_pipeline import load_config, run_pipeline
-
-    config = load_config()
-    try:
-        result = run_pipeline(
-            pdf_path=pdf_path,
-            output_path=output_path,
-            describe_diagrams_flag=job["describe_diagrams"],
-            dpi=job["dpi"],
-            verbose=True,
-            config=config,
-        )
-    except SystemExit as exc:
-        raise RuntimeError(f"Pipeline exited with code {exc.code}") from exc
-    return result
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        stderr = result.stderr.strip().splitlines()
+        last_lines = "\n".join(stderr[-5:]) if stderr else "unknown error"
+        raise RuntimeError(f"Pipeline failed (exit {result.returncode}):\n{last_lines}")
+    return job["output_path"]
 
 
 async def worker_loop() -> None:
@@ -92,7 +87,9 @@ async def worker_loop() -> None:
         job["status"] = "processing"
         job["started_at"] = _now()
         try:
-            result_path = await loop.run_in_executor(executor, _run_ocr_job, job_id)
+            result_path = await loop.run_in_executor(
+                None, _run_ocr_subprocess, job
+            )
             job["status"] = "done"
             job["result_path"] = result_path
         except Exception as exc:
