@@ -104,7 +104,7 @@ def create_qwen_llm(model_path: str, config: dict = None) -> LLM:
     return LLM(
         model=model_path,
         trust_remote_code=True,
-        gpu_memory_utilization=config.get('qwen_gpu_memory_utilization', 0.30),
+        gpu_memory_utilization=config.get('qwen_gpu_memory_utilization', 0.20),
         enforce_eager=False,
         tensor_parallel_size=torch.cuda.device_count(),
         max_model_len=config.get('qwen_max_model_len', 6144),
