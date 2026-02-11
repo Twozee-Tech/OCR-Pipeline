@@ -226,6 +226,9 @@ def clean_result(text: str, page_num: int, figures: list, classification: dict =
     text = re.sub(r'^(\s*)•\s*', r'\1- ', text, flags=re.MULTILINE)
     text = re.sub(r'^(\s*)○\s*', r'\1  - ', text, flags=re.MULTILINE)
 
+    # Remove repetitive lines (hallucination: same line repeated 3+ times)
+    text = collapse_repeated_lines(text)
+
     # Remove duplicate consecutive paragraphs (fuzzy: >80% similar)
     text = remove_duplicate_paragraphs(text)
 
@@ -234,6 +237,27 @@ def clean_result(text: str, page_num: int, figures: list, classification: dict =
     text = text.strip()
 
     return text
+
+
+def collapse_repeated_lines(text: str, max_repeats: int = 2) -> str:
+    """Collapse lines repeated more than max_repeats times in a row."""
+    lines = text.split('\n')
+    result = []
+    prev_line = None
+    repeat_count = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == prev_line and stripped:
+            repeat_count += 1
+            if repeat_count < max_repeats:
+                result.append(line)
+        else:
+            repeat_count = 0
+            result.append(line)
+            prev_line = stripped
+
+    return '\n'.join(result)
 
 
 def remove_duplicate_paragraphs(text: str) -> str:
