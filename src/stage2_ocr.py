@@ -219,6 +219,15 @@ def clean_result(text: str, page_num: int, figures: list, classification: dict =
     pattern = r'<\|ref\|>(.*?)<\|/ref\|><\|det\|>.*?<\|/det\|>'
     text = re.sub(pattern, replace_ref, text, flags=re.DOTALL)
 
+    # Strip orphaned/incomplete grounding tags that the main regex didn't catch
+    text = re.sub(r'<\|ref\|>(.*?)<\|/ref\|>', r'\1', text)
+    text = re.sub(r'<\|det\|>.*?<\|/det\|>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|/?(?:ref|det)\|>[^<]*', '', text)
+
+    # Remove empty/garbage HTML table artifacts
+    text = re.sub(r'<table>\s*</table>', '', text)
+    text = re.sub(r'<table>[^<]{0,10}</table>', '', text)
+
     # Fix table formatting
     text = fix_table_formatting(text)
 
@@ -231,6 +240,9 @@ def clean_result(text: str, page_num: int, figures: list, classification: dict =
 
     # Remove duplicate consecutive paragraphs (fuzzy: >80% similar)
     text = remove_duplicate_paragraphs(text)
+
+    # Remove bare-number sequences (hallucination: 4, 5, 6, ... 380)
+    text = remove_number_sequences(text)
 
     # Collapse excessive blank lines: 3+ newlines → 2 (one blank line)
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -260,17 +272,19 @@ def collapse_repeated_lines(text: str, max_repeats: int = 2) -> str:
     return '\n'.join(result)
 
 
-def remove_duplicate_paragraphs(text: str) -> str:
-    """Remove near-duplicate consecutive paragraphs."""
+def remove_duplicate_paragraphs(text: str, max_short_repeats: int = 2) -> str:
+    """Remove near-duplicate consecutive paragraphs.
+
+    Short paragraphs (<20 chars) that repeat more than max_short_repeats
+    times in a row are collapsed (keeps max_short_repeats copies).
+    Longer paragraphs use fuzzy word-overlap matching (>80%).
+    """
     paragraphs = text.split('\n\n')
     result = []
+    short_repeat_count = 0
+    prev_short = None
 
     for i, para in enumerate(paragraphs):
-        if i == 0:
-            result.append(para)
-            continue
-
-        prev = paragraphs[i - 1].strip()
         curr = para.strip()
 
         # Skip empty
@@ -278,8 +292,36 @@ def remove_duplicate_paragraphs(text: str) -> str:
             result.append(para)
             continue
 
-        # Skip if too short to compare meaningfully
-        if len(curr) < 20 or len(prev) < 20:
+        # Short paragraph repetition detection (handles ___, "for each row", etc.)
+        if len(curr) < 20:
+            if curr == prev_short:
+                short_repeat_count += 1
+                if short_repeat_count <= max_short_repeats:
+                    result.append(para)
+                # else: skip (too many repeats)
+            else:
+                short_repeat_count = 1
+                prev_short = curr
+                result.append(para)
+            continue
+
+        # Reset short tracking when we hit a long paragraph
+        short_repeat_count = 0
+        prev_short = None
+
+        if i == 0 or not result:
+            result.append(para)
+            continue
+
+        # Find previous non-empty paragraph for comparison
+        prev = ''
+        for j in range(len(result) - 1, -1, -1):
+            p = result[j].strip()
+            if p and len(p) >= 20:
+                prev = p
+                break
+
+        if not prev:
             result.append(para)
             continue
 
@@ -301,6 +343,38 @@ def remove_duplicate_paragraphs(text: str) -> str:
         else:
             result.append(para)
 
+    return '\n\n'.join(result)
+
+
+def remove_number_sequences(text: str, min_run: int = 5) -> str:
+    """Remove sequences of bare integers (hallucination like 4,5,6,...,380).
+
+    If min_run or more consecutive paragraphs are each just a bare integer,
+    remove all of them.
+    """
+    paragraphs = text.split('\n\n')
+    # Mark paragraphs that are bare integers
+    is_bare_int = []
+    for p in paragraphs:
+        s = p.strip()
+        is_bare_int.append(s.isdigit() and len(s) <= 6)
+
+    # Find runs of bare integers and mark for removal
+    remove = [False] * len(paragraphs)
+    i = 0
+    while i < len(paragraphs):
+        if is_bare_int[i]:
+            j = i
+            while j < len(paragraphs) and is_bare_int[j]:
+                j += 1
+            if j - i >= min_run:
+                for k in range(i, j):
+                    remove[k] = True
+            i = j
+        else:
+            i += 1
+
+    result = [p for p, r in zip(paragraphs, remove) if not r]
     return '\n\n'.join(result)
 
 
