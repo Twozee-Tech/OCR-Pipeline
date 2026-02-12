@@ -135,6 +135,7 @@ def _run_ocr_subprocess(job: dict) -> str:
             job["pdf_path"], job["output_path"],
             "--dpi", str(job["dpi"]),
             "--verbose",
+            "--debug",
         ]
     else:
         cmd = [
@@ -142,6 +143,7 @@ def _run_ocr_subprocess(job: dict) -> str:
             job["pdf_path"], job["output_path"],
             "--dpi", str(job["dpi"]),
             "--verbose",
+            "--debug",
         ]
         if job["describe_diagrams"]:
             cmd.append("--describe-diagrams")

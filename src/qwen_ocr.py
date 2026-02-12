@@ -253,6 +253,7 @@ def run_pipeline(
     dpi: int = 200,
     max_tokens: int = 4096,
     verbose: bool = False,
+    debug: bool = False,
     config: dict = None,
 ) -> str:
     """
@@ -264,6 +265,7 @@ def run_pipeline(
         dpi: PDF rendering resolution
         max_tokens: Max output tokens per page
         verbose: Print detailed progress
+        debug: Enable vLLM debug logging
         config: Configuration dict
 
     Returns:
@@ -271,6 +273,13 @@ def run_pipeline(
     """
     config = config or {}
     pdf_path = Path(pdf_path)
+
+    # Configure vLLM logging
+    if debug or verbose:
+        import logging
+        vllm_logger = logging.getLogger("vllm")
+        vllm_logger.setLevel(logging.DEBUG if debug else logging.INFO)
+        print("vLLM debug logging enabled" if debug else "vLLM info logging enabled")
 
     if not pdf_path.exists():
         print(f"ERROR: PDF not found: {pdf_path}")
@@ -424,6 +433,7 @@ Examples:
                         help='Max output tokens per page (default: 4096)')
     parser.add_argument('--config', default=None, help='Path to config JSON')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    parser.add_argument('--debug', action='store_true', help='Enable vLLM debug logging')
 
     return parser.parse_args()
 
@@ -433,13 +443,14 @@ def main():
     config = load_config(args.config)
 
     run_pipeline(
-        pdf_path=args.input_pdf,
-        output_path=args.output_md,
-        dpi=args.dpi,
-        max_tokens=args.max_tokens,
-        verbose=args.verbose,
-        config=config,
-    )
+         pdf_path=args.input_pdf,
+         output_path=args.output_md,
+         dpi=args.dpi,
+         max_tokens=args.max_tokens,
+         verbose=args.verbose,
+         debug=args.debug,
+         config=config,
+     )
 
 
 if __name__ == "__main__":

@@ -150,6 +150,7 @@ def run_pipeline(
     dpi: int = 200,
     verbose: bool = False,
     keep_assets: bool = False,
+    debug: bool = False,
     config: dict = None
 ) -> str:
     """
@@ -165,6 +166,7 @@ def run_pipeline(
         dpi: PDF rendering resolution
         verbose: Print detailed progress
         keep_assets: Keep intermediate files
+        debug: Enable vLLM debug logging
         config: Configuration dict
 
     Returns:
@@ -172,6 +174,13 @@ def run_pipeline(
     """
     config = config or {}
     pdf_path = Path(pdf_path)
+
+    # Configure vLLM logging
+    if debug or verbose:
+        import logging
+        vllm_logger = logging.getLogger("vllm")
+        vllm_logger.setLevel(logging.DEBUG if debug else logging.INFO)
+        print("vLLM debug logging enabled" if debug else "vLLM info logging enabled")
 
     if not pdf_path.exists():
         print(f"ERROR: PDF not found: {pdf_path}")
@@ -426,6 +435,7 @@ Examples:
     parser.add_argument('--dpi', type=int, default=200, help='PDF rendering DPI (default: 200)')
     parser.add_argument('--config', default=None, help='Path to config JSON')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    parser.add_argument('--debug', action='store_true', help='Enable vLLM debug logging')
     parser.add_argument('--keep-assets', action='store_true', help='Keep intermediate files')
 
     return parser.parse_args()
@@ -450,6 +460,7 @@ def main():
         describe_diagrams_flag=describe_diagrams,
         dpi=args.dpi,
         verbose=args.verbose,
+        debug=args.debug,
         keep_assets=args.keep_assets,
         config=config
     )
