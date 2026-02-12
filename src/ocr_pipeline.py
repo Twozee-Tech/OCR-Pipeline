@@ -228,7 +228,7 @@ def run_pipeline(
         # =====================================================================
         if verbose:
             print("\n" + "=" * 60)
-            print("STAGE 1: Page Classification (Qwen3-VL-30B-A3B-Instruct-NVFP4)")
+            print("STAGE 1: Page Classification (Qwen3-VL-30B)")
             print("=" * 60)
 
         progress.update(0, "Stage 1: Loading Qwen model")
@@ -236,12 +236,12 @@ def run_pipeline(
         # Find Qwen model
         qwen_path = find_model_path(
             config, 'qwen_model_path', None,
-            ['/workspace/models/Qwen3-VL-30B-A3B-Instruct-NVFP4', '/workspace/models/Qwen3-VL-30B-model', './Qwen3-VL-30B-model']
+            ['/workspace/models/Qwen3-VL-30B-model', './Qwen3-VL-30B-model']
         )
 
         if qwen_path is None:
             print("ERROR: Qwen3-VL model not found.")
-            print("Set qwen_model_path in config or download ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4 to /workspace/models/")
+            print("Set qwen_model_path in config or download to /workspace/models/")
             sys.exit(1)
 
         if verbose:
