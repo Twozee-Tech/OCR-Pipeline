@@ -38,19 +38,25 @@ from qwen_processor import save_pages_to_temp, prepare_inputs
 
 OCR_PROMPT = """You are a precise document OCR system. Convert this page to well-formatted markdown.
 
-Handle whatever you see on the page using these rules:
+Handle whatever you see on the page using these rules IN READING ORDER:
 
 **Text**: Faithfully reproduce all text preserving headers (#, ##, etc.), lists (-, 1.), bold (**), italic (*), and paragraph structure. Do NOT paraphrase or summarize — output the exact text.
 
 **Tables**: Convert to markdown tables with proper column alignment. Use | and --- separators. Preserve all cell content exactly.
 
-**Diagrams/Flowcharts**: Output a mermaid code block (```mermaid ... ```) recreating the diagram structure, followed by a brief textual description of the diagram.
+**Diagrams/Flowcharts**: IMPORTANT — do NOT skip diagrams. For each diagram:
+1. First output a mermaid code block recreating the diagram structure, capturing all nodes, connections, labels, and flow direction:
+```mermaid
+graph TD
+    A[Node] --> B[Node]
+```
+2. Then output a textual description explaining the diagram's purpose, all components, and their relationships.
 
-**UI Screenshots**: Provide a structured description of UI elements (buttons, menus, fields, labels) in reading order.
+**Figures/Images/Screenshots**: IMPORTANT — do NOT skip any visual element. For each figure or image:
+1. Output: [Figure: <caption if visible>] followed by a detailed description of what the figure shows (components, architecture, data flow, UI elements, etc.)
+2. If the figure has a caption or label (e.g. "Figure 1. SMS Platform"), include it exactly.
 
-**Figures/Photos**: Output a [Figure: description] placeholder with a detailed description of the image content.
-
-**Mixed pages**: Handle each element in reading order using the appropriate rule above.
+**Mixed pages**: Most pages contain BOTH text AND visual elements. Process EVERY element in reading order — text, then figure, then text, etc. Never skip an image or diagram just because there is also text on the page.
 
 Output ONLY the markdown content. Do not add commentary, do not explain what you see, do not wrap the entire output in a code block."""
 
