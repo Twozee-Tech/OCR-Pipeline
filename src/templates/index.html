@@ -122,43 +122,46 @@ function badgeClass(status) {
 }
 
 function renderJobs(jobs) {
-  const c = document.getElementById('jobsContainer');
-  if (!jobs.length) {
-    c.innerHTML = '<div class="empty">No jobs yet</div>';
-    return;
-  }
+   const c = document.getElementById('jobsContainer');
+   if (!jobs.length) {
+     c.innerHTML = '<div class="empty">No jobs yet</div>';
+     return;
+   }
 
-  let hasActive = jobs.some(j => j.status === 'queued' || j.status === 'processing');
-  fastPoll = hasActive;
+   let hasActive = jobs.some(j => j.status === 'queued' || j.status === 'processing');
+   fastPoll = hasActive;
 
-  let html = '<table><thead><tr><th>File</th><th>Status</th><th>Time</th><th>Actions</th></tr></thead><tbody>';
-  for (const j of jobs) {
-    let actions = '';
-    if (j.status === 'done') {
-      actions = `<button class="btn-sm btn-dl" onclick="downloadJob('${j.id}')">Download</button> `;
-    }
-    if (j.status !== 'processing') {
-      actions += `<button class="btn-sm btn-del" onclick="deleteJob('${j.id}')">Delete</button>`;
-    }
+   let html = '<table><thead><tr><th>File</th><th>Status</th><th>Time</th><th>Actions</th></tr></thead><tbody>';
+   for (const j of jobs) {
+     let actions = '';
+     if (j.status === 'done') {
+       actions = `<button class="btn-sm btn-dl" onclick="downloadJob('${j.id}')">Download</button> `;
+     }
+     if (j.status === 'done' || j.status === 'error') {
+       actions += `<button class="btn-sm" onclick="viewLogs('${j.id}')">View Logs</button>`;
+     }
+     if (j.status !== 'processing') {
+       actions += `<button class="btn-sm btn-del" onclick="deleteJob('${j.id}')">Delete</button>`;
+     }
 
-    let extra = '';
-    if (j.status === 'error' && j.error_message) {
-      extra = `<div class="error-msg" title="${j.error_message.replace(/"/g, '&quot;')}">${j.error_message}</div>`;
-    }
-    if (j.status === 'processing') {
-      extra = `<div class="time"><span class="spinner"></span>${duration(j.started_at)}</div>`;
-    }
+     let extra = '';
+     if (j.status === 'error' && j.error_message) {
+       extra = `<div class="error-msg" title="${j.error_message.replace(/"/g, '&quot;')}">${j.error_message}</div>`;
+     }
+     if (j.status === 'processing') {
+       extra = `<div class="time"><span class="spinner"></span>${duration(j.started_at)}</div>`;
+     }
 
-    html += `<tr>
-      <td>${j.filename}</td>
-      <td><span class="${badgeClass(j.status)}">${j.status}</span>${extra}</td>
-      <td class="time">${j.status === 'processing' ? formatTime(j.started_at) : formatTime(j.completed_at || j.created_at)}${j.completed_at && j.started_at ? ' (' + duration(j.started_at, j.completed_at) + ')' : ''}</td>
-      <td>${actions}</td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-  c.innerHTML = html;
-}
+     html += `<tr>
+       <td>${j.filename}</td>
+       <td><span class="${badgeClass(j.status)}">${j.status}</span>${extra}</td>
+       <td class="time">${j.status === 'processing' ? formatTime(j.started_at) : formatTime(j.completed_at || j.created_at)}${j.completed_at && j.started_at ? ' (' + duration(j.started_at, j.completed_at) + ')' : ''}</td>
+       <td>${actions}</td>
+     </tr>`;
+   }
+   html += '</tbody></table>';
+   c.innerHTML = html;
+ }
 
 async function refreshJobs() {
   try {
