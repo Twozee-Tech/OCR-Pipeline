@@ -163,7 +163,15 @@ def ocr_all_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
     if not image_paths:
         return []
 
-    params = SamplingParams(temperature=0, max_tokens=max_tokens, top_k=-1)
+    params = SamplingParams(
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+        repetition_penalty=1.0,
+        presence_penalty=1.5,
+        max_tokens=max_tokens,
+        greedy=False
+    )
     total = len(image_paths)
     results = []
 

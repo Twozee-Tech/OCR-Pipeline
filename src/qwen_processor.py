@@ -55,7 +55,15 @@ IMPORTANT: If the page contains boxes/nodes connected by arrows showing a flow o
 
 Respond with ONLY the JSON, no explanation."""
 
-CLASSIFY_PARAMS = SamplingParams(temperature=0, max_tokens=256, top_k=-1)
+CLASSIFY_PARAMS = SamplingParams(
+    temperature=0.7,
+    top_p=0.8,
+    top_k=20,
+    repetition_penalty=1.0,
+    presence_penalty=1.5,
+    max_tokens=32768,
+    greedy=False
+)
 
 
 # =============================================================================
@@ -79,7 +87,15 @@ DIAGRAM_PROMPT = """Analyze this diagram in detail.
 
 Be precise and capture all elements from the original diagram."""
 
-DIAGRAM_PARAMS = SamplingParams(temperature=0, max_tokens=6000, top_k=-1)
+DIAGRAM_PARAMS = SamplingParams(
+    temperature=0.7,
+    top_p=0.8,
+    top_k=20,
+    repetition_penalty=1.0,
+    presence_penalty=1.5,
+    max_tokens=32768,
+    greedy=False
+)
 
 
 # =============================================================================
