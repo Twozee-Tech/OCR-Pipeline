@@ -196,8 +196,8 @@ cat > "$TEMP_DIR/config/ocr_config.json" << CONFIGEOF
 {
     "deepseek_model_path": "/workspace/models/$DEEPSEEK_NAME",
     "qwen_model_path": "/workspace/models/$QWEN30B_NAME",
-    "qwen_gpu_memory_utilization": 0.40,
-    "qwen_max_model_len": 6144,
+    "qwen_gpu_memory_utilization": 0.60,
+    "qwen_max_model_len": 30000,
     "ocr_gpu_memory_utilization": 0.80,
     "ocr_max_model_len": 8192,
     "describe_diagrams": false
