@@ -91,6 +91,8 @@ For **every** diagram, figure, or visual element:
 > ❗ **Never** output just `[Figure: X]` without explanation.
 > ❗ **Never** skip diagrams due to complexity, ambiguity, or lack of clarity.
 > ❗ **Always** interpret and describe — even if the original is messy or incomplete.
+> 
+> > ❗ **IMPORTANT**: If you see image position metadata like `<!-- Image (x1, y1, x2, y2) -->` or similar bounding box annotations in the input, **ignore them completely**. These are internal extraction artifacts, not part of the document content to convert.
 
 ---
 
