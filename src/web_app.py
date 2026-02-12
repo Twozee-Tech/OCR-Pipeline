@@ -1,5 +1,7 @@
 """Web UI for OCR Pipeline — FastAPI app with basic auth and job queue."""
 import asyncio
+import json
+import logging
 import os
 import secrets
 import shutil
@@ -14,14 +16,22 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, sta
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+logger = logging.getLogger("ocr-web")
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 WEB_USER = os.environ.get("OCR_WEB_USER", "admin")
 WEB_PASS = os.environ.get("OCR_WEB_PASS", "changeme")
+OCR_PIPELINE = os.environ.get("OCR_PIPELINE", "default")  # "default" or "qwen"
 UPLOAD_DIR = Path("/data/uploads")
 OUTPUT_DIR = Path("/data/output")
 TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+# Optional: auto-pause a sibling vLLM container during OCR to free GPU memory.
+# Set to the container name (e.g. "vllm-Qwen3Next-Coder") to enable.
+CODER_CONTAINER_NAME = os.environ.get("CODER_CONTAINER_NAME", "")
+DOCKER_SOCKET = "/var/run/docker.sock"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,18 +63,88 @@ def _verify(creds: HTTPBasicCredentials = Depends(security)) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Docker helpers — auto-pause coder container during OCR
+# ---------------------------------------------------------------------------
+def _docker_api(method: str, path: str) -> tuple[int, str]:
+    """Call the Docker Engine API via the unix socket. Returns (http_status, body)."""
+    try:
+        result = subprocess.run(
+            [
+                "curl", "-s", "-o", "/dev/stdout", "-w", "\n%{http_code}",
+                "--unix-socket", DOCKER_SOCKET,
+                "-X", method,
+                f"http://localhost{path}",
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        lines = result.stdout.rsplit("\n", 1)
+        body = lines[0] if len(lines) > 1 else ""
+        status_code = int(lines[-1]) if lines[-1].strip().isdigit() else 0
+        return status_code, body
+    except Exception as exc:
+        logger.warning("Docker API call failed (%s %s): %s", method, path, exc)
+        return 0, ""
+
+
+def _is_coder_running() -> bool:
+    """Return True if the coder container exists and is running."""
+    if not CODER_CONTAINER_NAME:
+        return False
+    code, body = _docker_api("GET", f"/containers/{CODER_CONTAINER_NAME}/json")
+    if code != 200:
+        return False
+    try:
+        state = json.loads(body).get("State", {})
+        return state.get("Running", False)
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
+def _stop_coder() -> bool:
+    """Stop the coder container (10s grace period). Returns True on success."""
+    logger.info("Stopping coder container '%s' to free GPU memory...", CODER_CONTAINER_NAME)
+    code, _ = _docker_api("POST", f"/containers/{CODER_CONTAINER_NAME}/stop?t=10")
+    ok = code in (204, 304)  # 204 = stopped, 304 = already stopped
+    if ok:
+        logger.info("Coder container stopped.")
+    else:
+        logger.warning("Failed to stop coder container (HTTP %d).", code)
+    return ok
+
+
+def _start_coder() -> bool:
+    """Start the coder container. Returns True on success."""
+    logger.info("Starting coder container '%s'...", CODER_CONTAINER_NAME)
+    code, _ = _docker_api("POST", f"/containers/{CODER_CONTAINER_NAME}/start")
+    ok = code in (204, 304)  # 204 = started, 304 = already running
+    if ok:
+        logger.info("Coder container started.")
+    else:
+        logger.warning("Failed to start coder container (HTTP %d).", code)
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
 def _run_ocr_subprocess(job: dict) -> str:
     """Run the OCR pipeline as a subprocess so GPU memory is fully freed on exit."""
-    cmd = [
-        sys.executable, "/app/ocr_pipeline.py",
-        job["pdf_path"], job["output_path"],
-        "--dpi", str(job["dpi"]),
-        "--verbose",
-    ]
-    if job["describe_diagrams"]:
-        cmd.append("--describe-diagrams")
+    if OCR_PIPELINE == "qwen":
+        cmd = [
+            sys.executable, "/app/qwen_ocr.py",
+            job["pdf_path"], job["output_path"],
+            "--dpi", str(job["dpi"]),
+            "--verbose",
+        ]
+    else:
+        cmd = [
+            sys.executable, "/app/ocr_pipeline.py",
+            job["pdf_path"], job["output_path"],
+            "--dpi", str(job["dpi"]),
+            "--verbose",
+        ]
+        if job["describe_diagrams"]:
+            cmd.append("--describe-diagrams")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -86,6 +166,15 @@ async def worker_loop() -> None:
 
         job["status"] = "processing"
         job["started_at"] = _now()
+
+        # Auto-pause coder container to free GPU memory
+        coder_was_running = False
+        if CODER_CONTAINER_NAME:
+            coder_was_running = await loop.run_in_executor(None, _is_coder_running)
+            if coder_was_running:
+                await loop.run_in_executor(None, _stop_coder)
+                await asyncio.sleep(2)  # let GPU memory release
+
         try:
             result_path = await loop.run_in_executor(
                 None, _run_ocr_subprocess, job
@@ -97,6 +186,9 @@ async def worker_loop() -> None:
             job["error_message"] = str(exc)
         finally:
             job["completed_at"] = _now()
+            # Restart coder if it was running before
+            if coder_was_running:
+                await loop.run_in_executor(None, _start_coder)
             job_queue.task_done()
 
 

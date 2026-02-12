@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-REPO_RAW="https://raw.githubusercontent.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX-SPARK/feature/web-ui"
+REPO_RAW="https://raw.githubusercontent.com/Twozee-Tech/Advanced-OCR-Nvidia-DGX-SPARK/featuresv2"
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
@@ -185,6 +185,7 @@ curl -fsSL "$REPO_RAW/src/qwen_processor.py" -o "$TEMP_DIR/src/qwen_processor.py
 curl -fsSL "$REPO_RAW/src/stage2_ocr.py" -o "$TEMP_DIR/src/stage2_ocr.py"
 curl -fsSL "$REPO_RAW/src/stage2_ocr_worker.py" -o "$TEMP_DIR/src/stage2_ocr_worker.py"
 curl -fsSL "$REPO_RAW/src/web_app.py" -o "$TEMP_DIR/src/web_app.py"
+curl -fsSL "$REPO_RAW/src/qwen_ocr.py" -o "$TEMP_DIR/src/qwen_ocr.py"
 curl -fsSL "$REPO_RAW/src/templates/index.html" -o "$TEMP_DIR/src/templates/index.html"
 
 # Generate config with actual model paths (relative to /workspace/models inside container)
@@ -236,6 +237,9 @@ if [ -z "\$1" ]; then
     echo "  ocr document.pdf result.md          # Output to ./result.md"
     echo "  ocr document.pdf --diagrams         # With diagram description"
     echo "  ocr document.pdf -v                 # Verbose output"
+    echo ""
+    echo "Environment variables:"
+    echo "  OCR_PIPELINE=qwen    Use single-phase Qwen OCR (experimental)"
     echo ""
     echo "Models: \$MODELS_DIR"
     exit 1
@@ -290,6 +294,7 @@ docker run --rm --gpus all \\
     -e OCR_OUTPUT_PATH="/data/output/\$OUTPUT_NAME" \\
     -e OCR_DESCRIBE_DIAGRAMS="\$DESCRIBE_DIAGRAMS" \\
     -e OCR_VERBOSE="\$VERBOSE" \\
+    -e OCR_PIPELINE="\${OCR_PIPELINE:-default}" \\
     ocr-pipeline
 
 echo ""
@@ -344,8 +349,11 @@ case "\${1:-help}" in
       -e OCR_WEB_PORT="\${OCR_WEB_PORT:-14000}" \\
       -e OCR_WEB_USER="\${OCR_WEB_USER:-admin}" \\
       -e OCR_WEB_PASS="\${OCR_WEB_PASS:-changeme}" \\
+      -e CODER_CONTAINER_NAME="\${CODER_CONTAINER_NAME:-}" \\
+      -e OCR_PIPELINE="\${OCR_PIPELINE:-default}" \\
       -v "\$MODELS_DIR:/workspace/models:ro" \\
       -v "\$DATA_DIR:/data" \\
+      -v /var/run/docker.sock:/var/run/docker.sock \\
       "\$IMAGE_NAME"
     echo "OCR Web UI started on http://localhost:\${OCR_WEB_PORT:-14000}"
     echo "  Username: \${OCR_WEB_USER:-admin}"
@@ -371,12 +379,15 @@ case "\${1:-help}" in
     echo "  logs    Follow container logs"
     echo ""
     echo "Environment variables (set before 'start'):"
-    echo "  OCR_WEB_USER  Username for basic auth (default: admin)"
-    echo "  OCR_WEB_PASS  Password for basic auth (default: changeme)"
-    echo "  OCR_WEB_PORT  Port to listen on (default: 14000)"
+    echo "  OCR_WEB_USER            Username for basic auth (default: admin)"
+    echo "  OCR_WEB_PASS            Password for basic auth (default: changeme)"
+    echo "  OCR_WEB_PORT            Port to listen on (default: 14000)"
+    echo "  CODER_CONTAINER_NAME    Auto-pause this container during OCR (optional)"
+    echo "  OCR_PIPELINE            Pipeline to use: default or qwen (default: default)"
     echo ""
-    echo "Example:"
+    echo "Examples:"
     echo "  OCR_WEB_USER=myuser OCR_WEB_PASS=secret ocr-web start"
+    echo "  CODER_CONTAINER_NAME=vllm-Qwen3Next-Coder ocr-web start"
     ;;
 esac
 WEBWRAPPER

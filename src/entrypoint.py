@@ -46,14 +46,22 @@ def main():
     if os.environ.get('OCR_VERBOSE', 'false').lower() == 'true':
         args.append('--verbose')
 
-    print(f"OCR Pipeline v3.0 starting...")
-    print(f"  Input:  {input_pdf}")
-    print(f"  Output: {output_md}")
-    print(f"  Args:   {' '.join(args)}")
+    ocr_pipeline = os.environ.get('OCR_PIPELINE', 'default')
 
-    sys.argv = ['ocr_pipeline.py'] + args
-    from ocr_pipeline import main as run_pipeline
-    run_pipeline()
+    print(f"OCR Pipeline v3.0 starting...")
+    print(f"  Input:    {input_pdf}")
+    print(f"  Output:   {output_md}")
+    print(f"  Pipeline: {ocr_pipeline}")
+    print(f"  Args:     {' '.join(args)}")
+
+    if ocr_pipeline == 'qwen':
+        sys.argv = ['qwen_ocr.py'] + args
+        from qwen_ocr import main as run_qwen_ocr
+        run_qwen_ocr()
+    else:
+        sys.argv = ['ocr_pipeline.py'] + args
+        from ocr_pipeline import main as run_pipeline
+        run_pipeline()
 
 
 if __name__ == '__main__':
