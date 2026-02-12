@@ -127,7 +127,7 @@ def _start_coder() -> bool:
 # ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
-def _run_ocr_subprocess(job: dict) -> str:
+def _run_ocr_subprocess(job: dict) -> tuple[str, str, str]:
     """Run the OCR pipeline as a subprocess so GPU memory is fully freed on exit."""
     if OCR_PIPELINE == "qwen":
         cmd = [
@@ -147,13 +147,13 @@ def _run_ocr_subprocess(job: dict) -> str:
         ]
         if job["describe_diagrams"]:
             cmd.append("--describe-diagrams")
-
+    
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         stderr = result.stderr.strip().splitlines()
         last_lines = "\n".join(stderr[-5:]) if stderr else "unknown error"
         raise RuntimeError(f"Pipeline failed (exit {result.returncode}):\n{last_lines}")
-    return job["output_path"]
+    return job["output_path"], result.stdout, result.stderr
 
 
 async def worker_loop() -> None:
@@ -178,14 +178,18 @@ async def worker_loop() -> None:
                 await asyncio.sleep(2)  # let GPU memory release
 
         try:
-            result_path = await loop.run_in_executor(
+            result_path, stdout, stderr = await loop.run_in_executor(
                 None, _run_ocr_subprocess, job
             )
             job["status"] = "done"
             job["result_path"] = result_path
+            job["stdout"] = stdout
+            job["stderr"] = stderr
         except Exception as exc:
             job["status"] = "error"
             job["error_message"] = str(exc)
+            job["stdout"] = None
+            job["stderr"] = None
         finally:
             job["completed_at"] = _now()
             # Restart coder if it was running before
