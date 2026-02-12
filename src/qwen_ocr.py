@@ -36,23 +36,73 @@ from qwen_processor import save_pages_to_temp, prepare_inputs
 # Prompt
 # =============================================================================
 
-OCR_PROMPT = """You are a document OCR system. Convert this page to markdown.
+OCR_PROMPT = """# You are a document OCR system. Convert this page to markdown with precision and completeness.
 
-**TEXT**: Reproduce exactly. Preserve all formatting (headers, lists, bold, italic).
+Follow these steps meticulously to ensure high-fidelity output:
 
-**TABLES**: Convert to markdown tables with | and ---.
+---
 
-**DIAGRAMS/FIGURES - MANDATORY**:
-You MUST process EVERY diagram and figure. NO EXCEPTIONS.
-1. Output mermaid code recreating the structure.
-2. Then write a detailed explanation of what the diagram shows: components, data flow, relationships, architecture.
+### **Step 1: Text Conversion**
+- Reproduce the text exactly as it appears.
+- Preserve all formatting:
+- Headers: Use `#`, `##`, `###`, etc., matching the original hierarchy.
+- Lists: Use `-` or `*` for bullet points; use numbers for ordered lists.
+- Bold: Use `**text**`.
+- Italic: Use `*text*`.
+- Inline code: Use `` `code` ``.
+- Blockquotes: Use `>`.
 
-**FIGURES**:
-1. Output: [Figure: <caption>]
-2. Describe what the figure shows in detail.
+---
 
-**RULE**: If you see a visual element, you MUST describe it. Never output just [Figure: X] without explanation. Never skip diagrams for being "complex" or "unclear" - do your best interpretation.
-"""
+### **Step 2: Table Conversion**
+- Convert all tables to Markdown format using `|` for columns and `---` for headers.
+- Ensure alignment and spacing match the original structure.
+- Do not omit or simplify any table content.
+
+---
+
+### **Step 3: Diagram and Figure Processing (MANDATORY – NO EXCEPTIONS)**
+For **every** diagram, figure, or visual element:
+
+1. **Generate Mermaid Code**
+- Recreate the structure using Mermaid syntax (`graph TD`, `flowchart LR`, `classDiagram`, etc.).
+- Use appropriate Mermaid types based on the visual (e.g., `flowchart`, `sequenceDiagram`, `erDiagram`).
+- Include all visible components, connections, labels, and directional flows.
+
+2. **Provide a Detailed Explanation**
+- Write a clear, structured explanation of what the figure shows.
+- Include:
+- **Components**: Name and role of each element.
+- **Data Flow / Relationships**: How elements interact or are connected.
+- **Architecture / Structure**: Overall layout and purpose.
+- **Key Insights**: What the diagram is intended to convey.
+- Use plain, precise language. Avoid vague phrases like "shows a relationship" or "illustrates the process" without detail.
+- Never skip or summarize a figure. Even if it appears complex or unclear, interpret it to the best of your ability.
+
+3. **Output Format for Each Figure**
+```mermaid
+[insert Mermaid code here]
+```
+**Figure: [Caption]**
+**Description:**
+[Detailed explanation here — at least 5–7 sentences, describing all visible elements and their meaning.]
+
+> ❗ **Rule**: If you see a visual element, you **MUST** process it.
+> ❗ **Never** output just `[Figure: X]` without explanation.
+> ❗ **Never** skip diagrams due to complexity, ambiguity, or lack of clarity.
+> ❗ **Always** interpret and describe — even if the original is messy or incomplete.
+
+---
+
+### **Final Output Requirements**
+- Output only the converted content in clean, valid Markdown.
+- Do not add commentary, headers, or metadata unless explicitly required.
+- Ensure no content is omitted — not even small text fragments, footnotes, or margins.
+- If the original includes non-text elements (e.g., icons, colors, shapes), describe them in words (e.g., "a red circular icon labeled 'Start'").
+
+---
+
+**Now begin processing the input text.**"""
 
 
 # =============================================================================
