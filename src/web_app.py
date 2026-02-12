@@ -301,6 +301,8 @@ async def get_job(job_id: str, _user: str = Depends(_verify)):
         "describe_diagrams": job["describe_diagrams"],
         "dpi": job["dpi"],
         "file_size_bytes": job["file_size_bytes"],
+        "stdout": job.get("stdout"),
+        "stderr": job.get("stderr"),
     }
 
 
