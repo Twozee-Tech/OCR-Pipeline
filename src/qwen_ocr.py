@@ -134,10 +134,13 @@ def make_ocr_msg(image_path: str) -> list:
     ]
 
 
+BATCH_SIZE = 20  # Process pages in chunks to avoid OOM
+
+
 def ocr_all_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
                    max_tokens: int = 4096, verbose: bool = False) -> list:
     """
-    OCR all pages in a single vLLM batch.
+    OCR all pages via vLLM, in batches of BATCH_SIZE.
 
     Each page is an independent request — no shared context between pages.
 
@@ -154,31 +157,36 @@ def ocr_all_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
     if not image_paths:
         return []
 
-    if verbose:
-        print(f"Preparing {len(image_paths)} pages for batch OCR...")
-
     params = SamplingParams(temperature=0, max_tokens=max_tokens, top_k=-1)
-
-    # Prepare all inputs
-    inputs = [prepare_inputs(make_ocr_msg(p), processor) for p in image_paths]
-
-    if verbose:
-        print(f"Running batch inference ({len(inputs)} pages)...")
-
-    start = time.time()
-    outputs = llm.generate(inputs, params)
-    elapsed = time.time() - start
-
-    if verbose:
-        print(f"Batch inference completed in {elapsed:.1f}s ({elapsed/len(inputs):.1f}s/page)")
-
-    # Extract text results
+    total = len(image_paths)
     results = []
-    for i, output in enumerate(outputs):
-        text = output.outputs[0].text.strip()
-        results.append(text)
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, total)
+        batch_paths = image_paths[batch_start:batch_end]
+        batch_num = batch_start // BATCH_SIZE + 1
+        num_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
+
         if verbose:
-            print(f"  Page {i+1}: {len(text)} chars")
+            print(f"Batch {batch_num}/{num_batches}: preparing pages {batch_start+1}-{batch_end}...")
+
+        inputs = [prepare_inputs(make_ocr_msg(p), processor) for p in batch_paths]
+
+        if verbose:
+            print(f"Batch {batch_num}/{num_batches}: running inference ({len(inputs)} pages)...")
+
+        start = time.time()
+        outputs = llm.generate(inputs, params)
+        elapsed = time.time() - start
+
+        if verbose:
+            print(f"Batch {batch_num}/{num_batches}: done in {elapsed:.1f}s ({elapsed/len(inputs):.1f}s/page)")
+
+        for i, output in enumerate(outputs):
+            text = output.outputs[0].text.strip()
+            results.append(text)
+            if verbose:
+                print(f"  Page {batch_start+i+1}: {len(text)} chars")
 
     return results
 
