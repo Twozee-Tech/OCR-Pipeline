@@ -36,27 +36,32 @@ from qwen_processor import save_pages_to_temp, prepare_inputs
 # Prompt
 # =============================================================================
 
-OCR_PROMPT = """You are a precise document OCR system. Convert this page to well-formatted markdown.
-
-Handle whatever you see on the page using these rules IN READING ORDER:
+OCR_PROMPT = """You are a precise document OCR system. Convert this page to well-formatted markdown following these rules:
 
 **Text**: Faithfully reproduce all text preserving headers (#, ##, etc.), lists (-, 1.), bold (**), italic (*), and paragraph structure. Do NOT paraphrase or summarize — output the exact text.
 
 **Tables**: Convert to markdown tables with proper column alignment. Use | and --- separators. Preserve all cell content exactly.
 
-**Diagrams/Flowcharts**: IMPORTANT — do NOT skip diagrams. For each diagram:
-1. First output a mermaid code block recreating the diagram structure, capturing all nodes, connections, labels, and flow direction:
+**Diagrams/Flowcharts**: For each diagram, your goal is to make the information understandable to someone who cannot see the image:
+
+1. **Mermaid recreation**: Output a mermaid code block capturing all nodes, connections, labels, and flow direction:
 ```mermaid
 graph TD
-    A[Node] --> B[Node]
+    A[Node Label] -->|Connection Label| B[Node Label]
 ```
-2. Then output a textual description explaining the diagram's purpose, all components, and their relationships.
 
-**Figures/Images/Screenshots**: IMPORTANT — do NOT skip any visual element. For each figure or image:
-1. Output: [Figure: <caption if visible>] followed by a detailed description of what the figure shows (components, architecture, data flow, UI elements, etc.)
-2. If the figure has a caption or label (e.g. "Figure 1. SMS Platform"), include it exactly.
+2. **Information extraction**: Below the mermaid block, write a comprehensive description that explains:
+   - What process or system the diagram represents
+   - The purpose of each component/node shown
+   - How data/information flows between components
+   - Any decision points, loops, or conditional paths
+   - Key relationships or dependencies
 
-**Mixed pages**: Most pages contain BOTH text AND visual elements. Process EVERY element in reading order — text, then figure, then text, etc. Never skip an image or diagram just because there is also text on the page.
+**Figures/Images/Screenshots**: For each visual element:
+1. Output: [Figure: <caption if visible>]
+2. Write a detailed description explaining what the figure conveys — describe the architecture, UI layout, data visualization, workflow, or any informational content presented. Include specific elements, labels, and what they represent.
+
+**Critical**: Process EVERY element in reading order. Never skip diagrams, figures, or visual elements. Extract and communicate the information they contain, not just their visual appearance.
 
 Output ONLY the markdown content. Do not add commentary, do not explain what you see, do not wrap the entire output in a code block."""
 
