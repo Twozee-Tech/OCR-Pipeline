@@ -36,34 +36,23 @@ from qwen_processor import save_pages_to_temp, prepare_inputs
 # Prompt
 # =============================================================================
 
-OCR_PROMPT = """You are a precise document OCR system. Convert this page to well-formatted markdown following these rules:
+OCR_PROMPT = """You are a document OCR system. Convert this page to markdown.
 
-**Text**: Faithfully reproduce all text preserving headers (#, ##, etc.), lists (-, 1.), bold (**), italic (*), and paragraph structure. Do NOT paraphrase or summarize — output the exact text.
+**TEXT**: Reproduce exactly. Preserve all formatting (headers, lists, bold, italic).
 
-**Tables**: Convert to markdown tables with proper column alignment. Use | and --- separators. Preserve all cell content exactly.
+**TABLES**: Convert to markdown tables with | and ---.
 
-**Diagrams/Flowcharts**: For each diagram, your goal is to make the information understandable to someone who cannot see the image:
+**DIAGRAMS/FIGURES - MANDATORY**:
+You MUST process EVERY diagram and figure. NO EXCEPTIONS.
+1. Output mermaid code recreating the structure.
+2. Then write a detailed explanation of what the diagram shows: components, data flow, relationships, architecture.
 
-1. **Mermaid recreation**: Output a mermaid code block capturing all nodes, connections, labels, and flow direction:
-```mermaid
-graph TD
-    A[Node Label] -->|Connection Label| B[Node Label]
-```
+**FIGURES**:
+1. Output: [Figure: <caption>]
+2. Describe what the figure shows in detail.
 
-2. **Information extraction**: Below the mermaid block, write a comprehensive description that explains:
-   - What process or system the diagram represents
-   - The purpose of each component/node shown
-   - How data/information flows between components
-   - Any decision points, loops, or conditional paths
-   - Key relationships or dependencies
-
-**Figures/Images/Screenshots**: For each visual element:
-1. Output: [Figure: <caption if visible>]
-2. Write a detailed description explaining what the figure conveys — describe the architecture, UI layout, data visualization, workflow, or any informational content presented. Include specific elements, labels, and what they represent.
-
-**Critical**: Process EVERY element in reading order. Never skip diagrams, figures, or visual elements. Extract and communicate the information they contain, not just their visual appearance.
-
-Output ONLY the markdown content. Do not add commentary, do not explain what you see, do not wrap the entire output in a code block."""
+**RULE**: If you see a visual element, you MUST describe it. Never output just [Figure: X] without explanation. Never skip diagrams for being "complex" or "unclear" - do your best interpretation.
+"""
 
 
 # =============================================================================
