@@ -36,75 +36,10 @@ from qwen_processor import save_pages_to_temp, prepare_inputs
 # Prompt
 # =============================================================================
 
-OCR_PROMPT = """# You are a document OCR system. Convert this page to markdown with precision and completeness.
-
-Follow these steps meticulously to ensure high-fidelity output:
-
----
-
-### **Step 1: Text Conversion**
-- Reproduce the text exactly as it appears.
-- Preserve all formatting:
-- Headers: Use `#`, `##`, `###`, etc., matching the original hierarchy.
-- Lists: Use `-` or `*` for bullet points; use numbers for ordered lists.
-- Bold: Use `**text**`.
-- Italic: Use `*text*`.
-- Inline code: Use `` `code` ``.
-- Blockquotes: Use `>`.
-
----
-
-### **Step 2: Table Conversion**
-- Convert all tables to Markdown format using `|` for columns and `---` for headers.
-- Ensure alignment and spacing match the original structure.
-- Do not omit or simplify any table content.
-
----
-
-### **Step 3: Diagram and Figure Processing (MANDATORY – NO EXCEPTIONS)**
-For **every** diagram, figure, or visual element:
-
-1. **Generate Mermaid Code**
-- Recreate the structure using Mermaid syntax (`graph TD`, `flowchart LR`, `classDiagram`, etc.).
-- Use appropriate Mermaid types based on the visual (e.g., `flowchart`, `sequenceDiagram`, `erDiagram`).
-- Include all visible components, connections, labels, and directional flows.
-
-2. **Provide a Detailed Explanation**
-- Write a clear, structured explanation of what the figure shows.
-- Include:
-- **Components**: Name and role of each element.
-- **Data Flow / Relationships**: How elements interact or are connected.
-- **Architecture / Structure**: Overall layout and purpose.
-- **Key Insights**: What the diagram is intended to convey.
-- Use plain, precise language. Avoid vague phrases like "shows a relationship" or "illustrates the process" without detail.
-- Never skip or summarize a figure. Even if it appears complex or unclear, interpret it to the best of your ability.
-
-3. **Output Format for Each Figure**
-```mermaid
-[insert Mermaid code here]
-```
-**Figure: [Caption]**
-**Description:**
-[Detailed explanation here — at least 5–7 sentences, describing all visible elements and their meaning.]
-
-> ❗ **Rule**: If you see a visual element, you **MUST** process it.
-> ❗ **Never** output just `[Figure: X]` without explanation.
-> ❗ **Never** skip diagrams due to complexity, ambiguity, or lack of clarity.
-> ❗ **Always** interpret and describe — even if the original is messy or incomplete.
-> 
-> > ❗ **IMPORTANT**: If you see image position metadata like `<!-- Image (x1, y1, x2, y2) -->` or similar bounding box annotations in the input, **ignore them completely**. These are internal extraction artifacts, not part of the document content to convert.
-
----
-
-### **Final Output Requirements**
-- Output only the converted content in clean, valid Markdown.
-- Do not add commentary, headers, or metadata unless explicitly required.
-- Ensure no content is omitted — not even small text fragments, footnotes, or margins.
-- If the original includes non-text elements (e.g., icons, colors, shapes), describe them in words (e.g., "a red circular icon labeled 'Start'").
-
----
-
-**Now begin processing the input text.**"""
+OCR_PROMPT = """1. Do OCR of the page
+2. diagrams/images had to be included and described in very detail matter
+3. Put Picture/diagram description in Exact same spot as it was on page
+4. Do not add any text from yourself, that is not on page"""
 
 
 # =============================================================================
@@ -164,7 +99,7 @@ def create_qwen_ocr_llm(model_path: str, config: dict = None) -> LLM:
         gpu_memory_utilization=config.get('qwen_ocr_gpu_memory_utilization', 0.80),
         enforce_eager=False,
         tensor_parallel_size=torch.cuda.device_count(),
-        max_model_len=config.get('qwen_ocr_max_model_len', 16384),
+        max_model_len=config.get('qwen_ocr_max_model_len', 40960),
         seed=0,
     )
 
@@ -210,7 +145,7 @@ def ocr_all_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
         return []
 
     params = SamplingParams(
-        temperature=0.7,
+        temperature=0.25,
         top_p=0.8,
         top_k=20,
         repetition_penalty=1.0,
@@ -244,6 +179,9 @@ def ocr_all_pages(llm: LLM, processor: AutoProcessor, image_paths: list,
 
         for i, output in enumerate(outputs):
             text = output.outputs[0].text.strip()
+            # Strip chain of thought: remove everything up to and including <\think>
+            if "<\\think>" in text:
+                text = text.split("<\\think>")[-1]
             results.append(text)
             if verbose:
                 print(f"  Page {batch_start+i+1}: {len(text)} chars")
